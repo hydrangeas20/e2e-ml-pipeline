@@ -74,6 +74,10 @@ Outcome = 0 → diabetes negative
 
 Example schema:
 
+<img width="815" height="321" alt="Screenshot 2026-01-11 at 2 59 53 PM" src="https://github.com/user-attachments/assets/1679d8fa-b9e3-4e7a-9a8c-880f61027d03" />
+
+[diabetes.csv dataset (GitHub source)](https://github.com/maghfera/Diabetes-prediction/blob/main/diabetes.csv)
+
 
 ## ✨ Key Features
 
