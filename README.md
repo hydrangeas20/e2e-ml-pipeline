@@ -139,12 +139,17 @@ consistent evaluation using a saved test split
 
 ## Tech Stack
 
-Language: Python
-Modeling: scikit-learn (RandomForestClassifier)
-Pipeline: DVC
-Experiment Tracking: MLflow
-Platform: DagsHub, Github
-Version Control: Git
+<b> Language: Python </b>
+
+<b> Modeling: scikit-learn (RandomForestClassifier) </b>
+
+<b> Pipeline: DVC </b>
+
+<b> Experiment Tracking: MLflow </b>
+
+<b> Platform: DagsHub, Github </b>
+
+<b> Version Control: Git </b>
 
 ## 📁 Repository Structure
 ```bash
@@ -184,19 +189,19 @@ e2e-ml-pipeline/
    dvc push
 
 ## ⚙️ DVC Stage Creation (Reference)
-dvc stage add -n preprocess \
+<b><i> dvc stage add -n preprocess \ </b></i>
  -p preprocess.input,preprocess.output \
  -d src/preprocess.py -d data/raw/data.csv \
  -o data/processed/data.csv \
  python src/preprocess.py
 
-dvc stage add -n train \
+<b><i> dvc stage add -n train \  </b></i>
  -p train.data,train.model,train.random_state,train.n_estimators,train.max_depth \
  -d src/train.py -d data/raw/data.csv \
  -o models/model.pkl \
  python src/train.py
 
-dvc stage add -n evaluate \
+<b><i> dvc stage add -n evaluate \  </b></i>
  -d src/evaluate.py -d models/model.pkl -d data/raw/data.csv \
  python src/evaluate.py
 
