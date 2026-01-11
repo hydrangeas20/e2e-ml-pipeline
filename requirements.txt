@@ -1,2 +1,6 @@
 dagshub
 dvc
+dvc-s3
+scikit-learn
+mlflow
+pip freeze > requirements.txt
