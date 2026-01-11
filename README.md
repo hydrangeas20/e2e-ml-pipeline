@@ -183,7 +183,7 @@ e2e-ml-pipeline/
 4. Push artifacts to DVC remote (optional)
    dvc push
 
-⚙️ DVC Stage Creation (Reference)
+## ⚙️ DVC Stage Creation (Reference)
 dvc stage add -n preprocess \
  -p preprocess.input,preprocess.output \
  -d src/preprocess.py -d data/raw/data.csv \
@@ -199,6 +199,11 @@ dvc stage add -n train \
 dvc stage add -n evaluate \
  -d src/evaluate.py -d models/model.pkl -d data/raw/data.csv \
  python src/evaluate.py
+
+## Data Pipeline Visualization 
+
+<img width="1329" height="623" alt="Screenshot 2026-01-11 at 3 08 11 PM" src="https://github.com/user-attachments/assets/24a09daa-7b30-4cf2-ade0-2fabcc4d4e0a" />
+
 
 ## 🔐 Notes on Credentials
 
