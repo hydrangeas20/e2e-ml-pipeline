@@ -194,6 +194,15 @@ e2e-ml-pipeline/
 4. Push artifacts to DVC remote (optional)
    dvc push
 
+5. Quick Start (Docker)
+``` bash
+# Build the image
+docker build -t gdm-api .
+
+# Run the container
+docker run -p 8000:8000 gdm-api
+```
+
 ## ⚙️ DVC Stage Creation (Reference)
 <b><i> dvc stage add -n preprocess \ </b></i>
  -p preprocess.input,preprocess.output \
@@ -225,6 +234,21 @@ GET /health — health check endpoint
 
 POST /predict — returns predicted diabetes outcome (0/1)
 
+<b> /predict returns: </b>
+prediction (0/1)
+probability
+top feature contributions (simple heuristic)
+and an LLM explanation in human language:
+
+<b> Example Output: </b>
+``` bash
+{
+  "prediction": 1,
+  "risk_probability": 0.81,
+  "explanation": "Higher glucose and BMI levels are strongly associated with diabetes risk..."
+}
+```
+
 Local Run
 pip install -r requirements.txt
 uvicorn app.main:app --reload
@@ -233,9 +257,8 @@ Swagger UI:
 
 http://127.0.0.1:8000/docs
 
-<b>Important Note:</b>
-The API currently enforces strict feature alignment with the model training schema (scikit-learn feature_names_in_).
-A schema validation fix is planned to ensure the OpenAPI request body strictly matches the training feature set.
+<b> Known issue (in progress): </b>
+Swagger auto-generated schema includes placeholder fields (additionalProp1). Feature-alignment validation will be tightened so request schema always matches training features (feature_names_in_).
 
 ## 📸 API Demo (Swagger UI)
 
@@ -243,6 +266,21 @@ A schema validation fix is planned to ensure the OpenAPI request body strictly m
 <img width="1221" height="514" alt="Screenshot 2026-01-11 at 10 05 04 PM" src="https://github.com/user-attachments/assets/3ddf5059-d1e7-45b8-8751-976ead17d468" />
 
 Swagger UI showing live API endpoints (/health, /predict) and inference pipeline integration.
+
+
+### 🖥️ API Request Example
+``` bash
+{
+  "Pregnancies": 4,
+  "Glucose": 148,
+  "BloodPressure": 72,
+  "SkinThickness": 35,
+  "Insulin": 0,
+  "BMI": 28.0,
+  "DiabetesPedigreeFunction": 0.627,
+  "Age": 50
+}
+```
 
 ## 🔐 Notes on Credentials
 
