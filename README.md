@@ -22,11 +22,11 @@ This project demonstrates how to build a production-style ML workflow with:
 
 3. Evaluate the trained model and log metrics/artifacts
 
-## 🩺 Problem Context: Gestational Diabetes (GDM)
+### 🩺 Problem Context: Gestational Diabetes (GDM)
 
 Gestational Diabetes Mellitus (GDM) is a form of diabetes that can develop during pregnancy due to insulin resistance and increased metabolic demand.
 
-<b> Why tracking and treatment are important? </b>
+### Why tracking and treatment are important?
 
 Early detection and treatment of gestational diabetes is essential to reduce risk of:
 
@@ -73,6 +73,10 @@ Outcome = 1 → diabetes positive
 Outcome = 0 → diabetes negative
 
 Example schema:
+
+<img width="815" height="321" alt="Screenshot 2026-01-11 at 2 59 53 PM" src="https://github.com/user-attachments/assets/1679d8fa-b9e3-4e7a-9a8c-880f61027d03" />
+
+[diabetes.csv dataset (GitHub source)](https://github.com/maghfera/Diabetes-prediction/blob/main/diabetes.csv)
 
 
 ## ✨ Key Features
@@ -135,12 +139,23 @@ consistent evaluation using a saved test split
 
 ## Tech Stack
 
-Language: Python
-Modeling: scikit-learn (RandomForestClassifier)
-Pipeline: DVC
-Experiment Tracking: MLflow
-Platform: DagsHub, Github
-Version Control: Git
+<b> Language: Python </b>
+
+<b> Modeling: scikit-learn (RandomForestClassifier) </b>
+
+<b> Pipeline: DVC </b>
+
+<b> Experiment Tracking: MLflow </b>
+
+<b> Deployment: FastAPI </b>
+
+<b> Containerization: Docker </b>
+
+<b> Human-readable AI explanation layer: OpenAI </b>
+
+<b> Platform: DagsHub, Github </b>
+
+<b> Version Control: Git </b>
 
 ## 📁 Repository Structure
 ```bash
@@ -179,22 +194,55 @@ e2e-ml-pipeline/
 4. Push artifacts to DVC remote (optional)
    dvc push
 
-⚙️ DVC Stage Creation (Reference)
-dvc stage add -n preprocess \
+## ⚙️ DVC Stage Creation (Reference)
+<b><i> dvc stage add -n preprocess \ </b></i>
  -p preprocess.input,preprocess.output \
  -d src/preprocess.py -d data/raw/data.csv \
  -o data/processed/data.csv \
  python src/preprocess.py
 
-dvc stage add -n train \
+<b><i> dvc stage add -n train \  </b></i>
  -p train.data,train.model,train.random_state,train.n_estimators,train.max_depth \
  -d src/train.py -d data/raw/data.csv \
  -o models/model.pkl \
  python src/train.py
 
-dvc stage add -n evaluate \
+<b><i> dvc stage add -n evaluate \  </b></i>
  -d src/evaluate.py -d models/model.pkl -d data/raw/data.csv \
  python src/evaluate.py
+
+## Data Pipeline Visualization 
+
+<img width="1329" height="623" alt="Screenshot 2026-01-11 at 3 08 11 PM" src="https://github.com/user-attachments/assets/24a09daa-7b30-4cf2-ade0-2fabcc4d4e0a" />
+
+## 🪐 Model Serving (FastAPI)
+
+This project includes a FastAPI inference service that loads the trained model artifact (models/model.pkl) and exposes a REST API for real-time predictions.
+
+#### Available Endpoints:
+
+GET /health — health check endpoint
+
+POST /predict — returns predicted diabetes outcome (0/1)
+
+Local Run
+pip install -r requirements.txt
+uvicorn app.main:app --reload
+
+Swagger UI:
+
+http://127.0.0.1:8000/docs
+
+<b>Important Note:</b>
+The API currently enforces strict feature alignment with the model training schema (scikit-learn feature_names_in_).
+A schema validation fix is planned to ensure the OpenAPI request body strictly matches the training feature set.
+
+## 📸 API Demo (Swagger UI)
+
+
+<img width="1221" height="514" alt="Screenshot 2026-01-11 at 10 05 04 PM" src="https://github.com/user-attachments/assets/3ddf5059-d1e7-45b8-8751-976ead17d468" />
+
+Swagger UI showing live API endpoints (/health, /predict) and inference pipeline integration.
 
 ## 🔐 Notes on Credentials
 
