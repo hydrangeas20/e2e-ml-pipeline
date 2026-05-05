@@ -2,7 +2,7 @@
 
 This repository implements a reproducible end-to-end machine learning pipeline using DVC for data and pipeline versioning, and MLflow (via DagsHub) for experiment tracking and model registry. The project trains and evaluates a Random Forest classifier on a healthcare dataset to predict diabetes outcomes from clinical indicators.
 
-## 🌍 Overview
+## Overview
 
 This project demonstrates how to build a production-style ML workflow with:
 
@@ -22,7 +22,7 @@ This project demonstrates how to build a production-style ML workflow with:
 
 3. Evaluate the trained model and log metrics/artifacts
 
-### 🩺 Problem Context: Gestational Diabetes (GDM)
+### Problem Context: Gestational Diabetes (GDM)
 
 Gestational Diabetes Mellitus (GDM) is a form of diabetes that can develop during pregnancy due to insulin resistance and increased metabolic demand.
 
@@ -46,7 +46,7 @@ consistent screening decision support
 
 improved prioritization of patients who require additional testing and monitoring
 
-### 📊 Dataset
+### Dataset
 
 The dataset is tabular and includes clinical features such as:
 
@@ -54,15 +54,15 @@ Pregnancies
 
 Glucose
 
-BloodPressure
+Blood Pressure
 
-SkinThickness
+Skin Thickness
 
 Insulin
 
 BMI
 
-DiabetesPedigreeFunction
+Diabetes Pedigree Function (aka the likelihood of developing diabetes bases on family history)
 
 Age
 
@@ -79,7 +79,7 @@ Example schema:
 [diabetes.csv dataset (GitHub source)](https://github.com/maghfera/Diabetes-prediction/blob/main/diabetes.csv)
 
 
-## ✨ Key Features
+## Key Features
 
 ### DVC Pipeline Orchestration
 
@@ -157,7 +157,7 @@ consistent evaluation using a saved test split
 
 <b> Version Control: Git </b>
 
-## 📁 Repository Structure
+## Repository Structure
 ```bash
 e2e-ml-pipeline/
 │
@@ -179,7 +179,7 @@ e2e-ml-pipeline/
 ├── requirements.txt
 └── README.md
 ```
-## 🚀 Setup & Usage
+## Setup & Usage
 
 1. Create and activate environment
    python -m venv venv
@@ -203,7 +203,7 @@ docker build -t gdm-api .
 docker run -p 8000:8000 gdm-api
 ```
 
-## ⚙️ DVC Stage Creation (Reference)
+## DVC Stage Creation (Reference)
 <b><i> dvc stage add -n preprocess \ </b></i>
  -p preprocess.input,preprocess.output \
  -d src/preprocess.py -d data/raw/data.csv \
@@ -224,7 +224,7 @@ docker run -p 8000:8000 gdm-api
 
 <img width="1329" height="623" alt="Screenshot 2026-01-11 at 3 08 11 PM" src="https://github.com/user-attachments/assets/24a09daa-7b30-4cf2-ade0-2fabcc4d4e0a" />
 
-## 🪐 Model Serving (FastAPI)
+## Model Serving (FastAPI)
 
 This project includes a FastAPI inference service that loads the trained model artifact (models/model.pkl) and exposes a REST API for real-time predictions.
 
@@ -260,7 +260,7 @@ http://127.0.0.1:8000/docs
 <b> Known issue (in progress): </b>
 Swagger auto-generated schema includes placeholder fields (additionalProp1). Feature-alignment validation will be tightened so request schema always matches training features (feature_names_in_).
 
-## 📸 API Demo (Swagger UI)
+## API Demo (Swagger UI)
 
 
 <img width="1221" height="514" alt="Screenshot 2026-01-11 at 10 05 04 PM" src="https://github.com/user-attachments/assets/3ddf5059-d1e7-45b8-8751-976ead17d468" />
@@ -268,7 +268,7 @@ Swagger auto-generated schema includes placeholder fields (additionalProp1). Fea
 Swagger UI showing live API endpoints (/health, /predict) and inference pipeline integration.
 
 
-### 🖥️ API Request Example
+### API Request Example
 ``` bash
 {
   "Pregnancies": 4,
@@ -282,6 +282,6 @@ Swagger UI showing live API endpoints (/health, /predict) and inference pipeline
 }
 ```
 
-## 🔐 Notes on Credentials
+## Notes on Credentials
 
 This repository uses a local .env file (ignored via .gitignore) to store MLflow/DagsHub credentials securely.
