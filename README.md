@@ -282,6 +282,12 @@ Swagger UI showing live API endpoints (/health, /predict) and inference pipeline
 }
 ```
 
+
+### AWS Deployment 
+<img width="1536" height="1024" alt="Hamda Gestation Diabetes AWS Deployment" src="https://github.com/user-attachments/assets/23cf4a93-07d8-4ce9-ab22-4d5e19150797" />
+
+
+
 ## Notes on Credentials
 
 This repository uses a local .env file (ignored via .gitignore) to store MLflow/DagsHub credentials securely.
