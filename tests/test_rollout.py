@@ -24,7 +24,8 @@ def _predict(c: TestClient, rows: list[dict[str, Any]]) -> tuple[int, str | None
     r = c.post("/v1/predict", json={"instances": rows})
     b = r.json()
     return r.status_code, b.get("model_version") or b.get("error", {}).get("details", {}).get(
-        "model_version")
+        "model_version"
+    )
 
 
 def _dep(c: TestClient) -> dict[str, Any]:
@@ -54,8 +55,7 @@ def test_full_rollout_failure_and_automatic_rollback(
     r = client.post("/admin/promote", json={"version": "v2-rf"})
     assert r.json()["result"] == "active_on_probation"
     assert [_predict(client, rows) for _ in range(4)] == [(200, "v2-rf")] * 4
-    client.post("/admin/faults", json={"kind": "error_after_n", "model_version": "v2-rf",
-                                       "n": 2})
+    client.post("/admin/faults", json={"kind": "error_after_n", "model_version": "v2-rf", "n": 2})
     trace = [_predict(client, rows) for _ in range(12)]
     # 2 more successes, then errors until the gate trips, then v1 serves again.
     assert trace[:2] == [(200, "v2-rf")] * 2
@@ -125,8 +125,9 @@ def _controller(reg: Registry, settings: Settings) -> DeploymentController:
     return c
 
 
-def test_concurrent_promotion_requests(bootstrapped: Registry,
-                                       settings_factory: Callable[..., Settings]) -> None:
+def test_concurrent_promotion_requests(
+    bootstrapped: Registry, settings_factory: Callable[..., Settings]
+) -> None:
     ctl = _controller(bootstrapped, settings_factory())
     barrier = threading.Barrier(6)
     results: list[str] = []
@@ -147,15 +148,21 @@ def test_concurrent_promotion_requests(bootstrapped: Registry,
     for t in ts:
         t.join()
     assert results.count("active_on_probation") == 1, results
-    assert set(results) <= {"active_on_probation", "promotion_in_progress",
-                            "probation_in_progress", "invalid_state"}
+    assert set(results) <= {
+        "active_on_probation",
+        "promotion_in_progress",
+        "probation_in_progress",
+        "invalid_state",
+    }
     st = bootstrapped.read_state()
     assert [v for v, e in st["versions"].items() if e["state"] == "active"] == [st["active"]]
 
 
 def test_concurrent_inference_during_promotion_is_consistently_attributed(
-    client_factory: Callable[..., TestClient], bootstrapped: Registry,
-    rows: list[dict[str, Any]], tmp_path: Path,
+    client_factory: Callable[..., TestClient],
+    bootstrapped: Registry,
+    rows: list[dict[str, Any]],
+    tmp_path: Path,
 ) -> None:
     c = client_factory(max_concurrency=4, max_queue=64, gate_window=10_000)
     stop = threading.Event()
@@ -165,8 +172,14 @@ def test_concurrent_inference_during_promotion_is_consistently_attributed(
         while not stop.is_set():
             r = c.post("/v1/predict", json={"instances": rows[:1]})
             b = r.json()
-            seen.append((r.status_code, b["model_version"], b["request_id"],
-                         [p["probability"] for p in b["predictions"]]))
+            seen.append(
+                (
+                    r.status_code,
+                    b["model_version"],
+                    b["request_id"],
+                    [p["probability"] for p in b["predictions"]],
+                )
+            )
 
     with ThreadPoolExecutor(4) as ex:
         futs = [ex.submit(hammer) for _ in range(4)]
@@ -187,13 +200,16 @@ def test_concurrent_inference_during_promotion_is_consistently_attributed(
         by_v.setdefault(v, set()).add(p[0])
     assert all(len(s) == 1 for s in by_v.values()) and len(by_v) == 2
     # the audit record of every request names the same version as its response
-    audit = {json.loads(x)["request_id"]: json.loads(x)["model_version"]
-             for x in (tmp_path / "predictions.jsonl").read_text().splitlines()}
+    audit = {
+        json.loads(x)["request_id"]: json.loads(x)["model_version"]
+        for x in (tmp_path / "predictions.jsonl").read_text().splitlines()
+    }
     assert all(audit[rid] == v for _, v, rid, _ in seen)
 
 
 def test_interrupted_promotion_keeps_active_model(
-    bootstrapped: Registry, settings_factory: Callable[..., Settings],
+    bootstrapped: Registry,
+    settings_factory: Callable[..., Settings],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     ctl = _controller(bootstrapped, settings_factory())

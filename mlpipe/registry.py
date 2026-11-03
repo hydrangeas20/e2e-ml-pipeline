@@ -274,8 +274,14 @@ class Registry:
                     raise RegistryError(
                         "invalid_transition", f"{version}: {frm} -> {to} not allowed"
                     )
-                new["versions"][version] = {"state": str(to), "updated_at": _now(), "action": action}
-                transitions.append({"model_version": version, "from_state": str(frm), "to_state": str(to)})
+                new["versions"][version] = {
+                    "state": str(to),
+                    "updated_at": _now(),
+                    "action": action,
+                }
+                transitions.append(
+                    {"model_version": version, "from_state": str(frm), "to_state": str(to)}
+                )
             new.update(pointer_updates)
             event = self.append_event(
                 {

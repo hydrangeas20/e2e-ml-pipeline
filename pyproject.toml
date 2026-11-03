@@ -54,6 +54,7 @@ ignore = ["RUF012"]
 python_version = "3.12"
 strict = true
 packages = ["mlpipe"]
+plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
 module = ["skops.*", "sklearn.*", "prometheus_client.*"]

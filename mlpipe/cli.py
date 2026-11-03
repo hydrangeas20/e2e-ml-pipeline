@@ -58,7 +58,7 @@ def _show(r: httpx.Response) -> int:
 def cmd_fetch_data(args: argparse.Namespace) -> int:
     from mlpipe.train import PUBLIC_DATA_SHA256, PUBLIC_DATA_URL
 
-    with urllib.request.urlopen(PUBLIC_DATA_URL, timeout=30) as resp:  # noqa: S310
+    with urllib.request.urlopen(PUBLIC_DATA_URL, timeout=30) as resp:
         data = resp.read()
     digest = hashlib.sha256(data).hexdigest()
     if digest != PUBLIC_DATA_SHA256:
@@ -94,7 +94,8 @@ def cmd_train(args: argparse.Namespace) -> int:
     params = json.loads(args.params) if args.params else None
     v = _register_from(
         lambda d: train_and_package(Path(args.data), d, version=args.version, params=params),
-        reg, args.version,
+        reg,
+        args.version,
     )
     m = json.loads((reg.artifact_dir(v) / "manifest.json").read_text())
     _print({"registered": v, "metrics": m["metrics"], "sha256": m["model_sha256"]})
@@ -171,9 +172,17 @@ def cmd_rollback(args: argparse.Namespace) -> int:
 
 
 def cmd_inject(args: argparse.Namespace) -> int:
-    body = {k: v for k, v in {"kind": args.kind, "model_version": args.model_version,
-                              "n": args.n, "defect": args.defect,
-                              "seconds": args.seconds}.items() if v is not None}
+    body = {
+        k: v
+        for k, v in {
+            "kind": args.kind,
+            "model_version": args.model_version,
+            "n": args.n,
+            "defect": args.defect,
+            "seconds": args.seconds,
+        }.items()
+        if v is not None
+    }
     with _client(args) as c:
         return _show(c.post("/admin/faults", json=body))
 
@@ -191,8 +200,13 @@ def cmd_server_state(args: argparse.Namespace) -> int:
 def cmd_diagnose(args: argparse.Namespace) -> int:
     from mlpipe.diagnose import diagnose_file
 
-    rep = diagnose_file(Path(args.registry), args.version, Path(args.data),
-                        defect=args.simulate_defect, labels=not args.no_labels)
+    rep = diagnose_file(
+        Path(args.registry),
+        args.version,
+        Path(args.data),
+        defect=args.simulate_defect,
+        labels=not args.no_labels,
+    )
     _print(rep)
     return 0
 
@@ -220,7 +234,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     add("fetch-data", cmd_fetch_data).add_argument("--out", default="data/public/diabetes.csv")
     add("import-legacy", cmd_import_legacy, registry=True).add_argument(
-        "--version", default="v1-legacy-rf")
+        "--version", default="v1-legacy-rf"
+    )
     sp = add("train", cmd_train, registry=True)
     sp.add_argument("--data", default="data/public/diabetes.csv")
     sp.add_argument("--version", required=True)

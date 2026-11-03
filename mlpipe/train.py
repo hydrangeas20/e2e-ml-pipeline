@@ -33,9 +33,7 @@ from mlpipe.schema import SERVING_SCHEMA, TARGET, FeatureSchema
 # Public copy of the source dataset referenced in the README. It differs from the
 # DVC-tracked data/raw/data.csv (not recoverable without DagsHub credentials) in one
 # row; see docs/PLATFORM.md#data-provenance.
-PUBLIC_DATA_URL = (
-    "https://raw.githubusercontent.com/maghfera/Diabetes-prediction/main/diabetes.csv"
-)
+PUBLIC_DATA_URL = "https://raw.githubusercontent.com/maghfera/Diabetes-prediction/main/diabetes.csv"
 PUBLIC_DATA_SHA256 = "bf81d06e0c0512662862248241ab46d7c29258c6ceaad32f3cab56b52a17fdab"
 
 DEFAULT_PARAMS: dict[str, Any] = {

@@ -26,9 +26,11 @@ def artifacts(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Path]:
     """Built once per session: legacy import, two good candidates, all bad fixtures."""
     root = tmp_path_factory.mktemp("artifacts")
     out = {"v1-legacy-rf": root / "v1-legacy-rf"}
-    import_legacy(out["v1-legacy-rf"], pickle_path=ROOT / "mlruns/0/models/"
-                  "m-ac8443cec0b64c03929f2d97d344b3c5/artifacts/model.pkl",
-                  holdout_csv=DATA)
+    import_legacy(
+        out["v1-legacy-rf"],
+        pickle_path=ROOT / "mlruns/0/models/m-ac8443cec0b64c03929f2d97d344b3c5/artifacts/model.pkl",
+        holdout_csv=DATA,
+    )
     for v, p in (("v2-rf", {}), ("v3-rf", {"n_estimators": 50, "random_state": 7})):
         out[v] = root / v
         train_and_package(DATA, out[v], version=v, params=p)

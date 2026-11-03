@@ -85,8 +85,11 @@ def diagnose(
     changed = {k: float(v) for k, v in diff.items() if v > 1e-9}
     shift_srv = standardized_mean_shift(X_srv, ref)
     shift_raw = standardized_mean_shift(X_ref, ref)
-    alerts = {k: round(v, 3) for k, v in shift_srv.items()
-              if v > SHIFT_ALERT and shift_raw.get(k, 0) <= SHIFT_ALERT}
+    alerts = {
+        k: round(v, 3)
+        for k, v in shift_srv.items()
+        if v > SHIFT_ALERT and shift_raw.get(k, 0) <= SHIFT_ALERT
+    }
     layers["feature_pipeline"] = {
         "status": "problem" if changed or alerts else "ok",
         "features_differing_from_reference_transform": sorted(changed),
@@ -138,13 +141,13 @@ def diagnose(
 
 def _verdict(layers: dict[str, dict[str, Any]]) -> dict[str, Any]:
     order = ["data_quality", "feature_pipeline", "model_quality", "calibration", "serving"]
-    first = next((name for name in order if layers.get(name, {}).get("status") == "problem"),
-                 None)
+    first = next((name for name in order if layers.get(name, {}).get("status") == "problem"), None)
     return {"likely_root_cause": first or "none_detected", "layers": layers}
 
 
-def diagnose_file(registry_dir: Path, version: str, data: Path, *, defect: str | None = None,
-                  labels: bool = True) -> dict[str, Any]:
+def diagnose_file(
+    registry_dir: Path, version: str, data: Path, *, defect: str | None = None, labels: bool = True
+) -> dict[str, Any]:
     reg = Registry(registry_dir)
     d = reg.artifact_dir(version)
     manifest = verify_integrity(d)

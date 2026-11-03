@@ -124,8 +124,14 @@ class ServiceError(Exception):
 
 
 def _err(status: int, code: str, message: str, **details: Any) -> JSONResponse:
-    body = {"error": {"code": code, "message": message, "request_id": request_id_var.get(),
-                      **({"details": details} if details else {})}}
+    body = {
+        "error": {
+            "code": code,
+            "message": message,
+            "request_id": request_id_var.get(),
+            **({"details": details} if details else {}),
+        }
+    }
     return JSONResponse(body, status_code=status)
 
 
@@ -140,10 +146,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     registry = Registry(settings.registry_dir)
     controller = DeploymentController(registry, SERVING_SCHEMA, settings, metrics)
     faults = FaultInjector(settings.enable_fault_injection)
-    audit = PredictionAuditLog(settings.audit_log_path, fsync=settings.audit_fsync,
-                               fail_hook=faults.audit_should_fail)
-    executor = ThreadPoolExecutor(max_workers=settings.max_concurrency,
-                                  thread_name_prefix="infer")
+    audit = PredictionAuditLog(
+        settings.audit_log_path, fsync=settings.audit_fsync, fail_hook=faults.audit_should_fail
+    )
+    executor = ThreadPoolExecutor(max_workers=settings.max_concurrency, thread_name_prefix="infer")
     capacity = settings.max_concurrency + settings.max_queue
     lifecycle: dict[str, Any] = {"admitted": 0, "draining": False, "started": False}
 
@@ -151,8 +157,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         controller.startup()
         lifecycle["started"] = True
-        log(logger, logging.INFO, "service started", config_version=settings.config_version,
-            ready=controller.readiness()["ready"])
+        log(
+            logger,
+            logging.INFO,
+            "service started",
+            config_version=settings.config_version,
+            ready=controller.readiness()["ready"],
+        )
         yield
         lifecycle["draining"] = True
         deadline = time.monotonic() + settings.drain_timeout_s
@@ -185,8 +196,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         path = getattr(route, "path", "unmatched")
         metrics.requests.labels(path, str(response.status_code)).inc()
         token = request_id_var.set(rid)
-        log(logger, logging.INFO, "request", method=request.method, route=path,
-            status=response.status_code, duration_ms=round((time.perf_counter() - t0) * 1000, 2))
+        log(
+            logger,
+            logging.INFO,
+            "request",
+            method=request.method,
+            route=path,
+            status=response.status_code,
+            duration_ms=round((time.perf_counter() - t0) * 1000, 2),
+        )
         request_id_var.reset(token)
         return response
 
@@ -195,8 +213,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if request.url.path in ("/predict", "/v1/predict"):
             metrics.feature_validation_failures.inc()
         # Echo location and message only: never the offending input values.
-        details = [{"loc": list(e.get("loc", ())), "msg": e.get("msg"), "type": e.get("type")}
-                   for e in exc.errors()]
+        details = [
+            {"loc": list(e.get("loc", ())), "msg": e.get("msg"), "type": e.get("type")}
+            for e in exc.errors()
+        ]
         return _err(422, "invalid_request", "request failed schema validation", errors=details)
 
     @app.exception_handler(ServiceError)
@@ -224,10 +244,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         preds = [Prediction(prediction=int(p >= lm.threshold), probability=p) for p in p1]
         controller.drift.observe(lm, X)
         try:
-            audit.write([{"request_id": rid, "row": i, "model_version": lm.version,
-                          "model_sha256": lm.sha256, "config_version": settings.config_version,
-                          "prediction": pr.prediction, "probability": round(pr.probability, 6)}
-                         for i, pr in enumerate(preds)])
+            audit.write(
+                [
+                    {
+                        "request_id": rid,
+                        "row": i,
+                        "model_version": lm.version,
+                        "model_sha256": lm.sha256,
+                        "config_version": settings.config_version,
+                        "prediction": pr.prediction,
+                        "probability": round(pr.probability, 6),
+                    }
+                    for i, pr in enumerate(preds)
+                ]
+            )
         except AuditError:
             metrics.audit_failures.inc()
             if settings.audit_required:
@@ -248,8 +278,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise ServiceError(422, "batch_too_large", f"max {settings.max_batch_rows} instances")
         if lifecycle["admitted"] >= capacity:
             metrics.rejected.labels("overloaded").inc()
-            raise ServiceError(429, "overloaded", "admission limit reached; retry later",
-                               capacity=capacity)
+            raise ServiceError(
+                429, "overloaded", "admission limit reached; retry later", capacity=capacity
+            )
         lifecycle["admitted"] += 1
         metrics.in_flight.inc()
         loop = asyncio.get_running_loop()
@@ -267,23 +298,34 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except TimeoutError:
             fut.add_done_callback(lambda f: f.exception() if not f.cancelled() else None)
             fail(lm, "timeout", t0)
-            raise ServiceError(504, "timeout", f"inference exceeded {settings.request_timeout_s}s",
-                               model_version=lm.version) from None
+            raise ServiceError(
+                504,
+                "timeout",
+                f"inference exceeded {settings.request_timeout_s}s",
+                model_version=lm.version,
+            ) from None
         except AuditError:
             metrics.errors.labels(lm.version, "audit").inc()
-            raise ServiceError(503, "audit_unavailable",
-                               "prediction not returned: audit record could not be written",
-                               model_version=lm.version) from None
+            raise ServiceError(
+                503,
+                "audit_unavailable",
+                "prediction not returned: audit record could not be written",
+                model_version=lm.version,
+            ) from None
         except (InjectedFault, InvalidOutput, FeatureValidationError) as e:
-            reason = {InjectedFault: "injected", InvalidOutput: "invalid_output",
-                      FeatureValidationError: "feature_pipeline"}[type(e)]
+            reason = {
+                InjectedFault: "injected",
+                InvalidOutput: "invalid_output",
+                FeatureValidationError: "feature_pipeline",
+            }[type(e)]
             fail(lm, reason, t0)
             raise ServiceError(500, "prediction_failed", reason, model_version=lm.version) from None
         except Exception as e:
             fail(lm, "internal", t0)
             log(logger, logging.ERROR, "inference error", error_type=type(e).__name__)
-            raise ServiceError(500, "prediction_failed", "internal",
-                               model_version=lm.version) from None
+            raise ServiceError(
+                500, "prediction_failed", "internal", model_version=lm.version
+            ) from None
         latency = (time.perf_counter() - t0) * 1000
         metrics.latency.labels(route).observe(latency / 1000)
         metrics.predictions.labels(lm.version).inc(len(preds))
@@ -298,9 +340,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def predict_v1(body: PredictRequest) -> PredictResponse:
         lm, preds = await serve([i.model_dump() for i in body.instances], "/v1/predict")
         return PredictResponse(
-            request_id=request_id_var.get() or "", model_version=lm.version,
-            model_sha256=lm.sha256, schema_version=SERVING_SCHEMA.version,
-            config_version=settings.config_version, decision_threshold=lm.threshold,
+            request_id=request_id_var.get() or "",
+            model_version=lm.version,
+            model_sha256=lm.sha256,
+            schema_version=SERVING_SCHEMA.version,
+            config_version=settings.config_version,
+            decision_threshold=lm.threshold,
             predictions=preds,
         )
 
@@ -310,9 +355,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lm, preds = await serve([body.model_dump()], "/predict")
         p = preds[0]
         return LegacyPredictResponse(
-            prediction=p.prediction, confidence=max(p.probability, 1 - p.probability),
-            probability=p.probability, request_id=request_id_var.get() or "",
-            model_version=lm.version, model_sha256=lm.sha256,
+            prediction=p.prediction,
+            confidence=max(p.probability, 1 - p.probability),
+            probability=p.probability,
+            request_id=request_id_var.get() or "",
+            model_version=lm.version,
+            model_sha256=lm.sha256,
             config_version=settings.config_version,
         )
 
@@ -362,21 +410,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/admin/validate/{version}", dependencies=adm)
     async def validate(version: str) -> dict[str, Any]:
-        return await asyncio.to_thread(controller.validate, version,
-                                       correlation_id=request_id_var.get())
+        return await asyncio.to_thread(
+            controller.validate, version, correlation_id=request_id_var.get()
+        )
 
     @app.post("/admin/promote", dependencies=adm)
     async def promote(body: PromoteBody) -> JSONResponse:
         rid = request_id_var.get()
-        res = await asyncio.to_thread(controller.promote, body.version,
-                                      expected_generation=body.expected_generation,
-                                      correlation_id=rid)
+        res = await asyncio.to_thread(
+            controller.promote,
+            body.version,
+            expected_generation=body.expected_generation,
+            correlation_id=rid,
+        )
         return JSONResponse(res, status_code=200 if res["result"] != "rejected" else 422)
 
     @app.post("/admin/rollback", dependencies=adm)
     async def rollback(body: RollbackBody) -> dict[str, Any]:
-        return await asyncio.to_thread(controller.rollback, reason=body.reason,
-                                       correlation_id=request_id_var.get())
+        return await asyncio.to_thread(
+            controller.rollback, reason=body.reason, correlation_id=request_id_var.get()
+        )
 
     @app.get("/admin/faults", dependencies=adm)
     async def list_faults() -> list[dict[str, Any]]:

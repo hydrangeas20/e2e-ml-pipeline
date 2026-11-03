@@ -49,7 +49,9 @@ def build_fixture(kind: str, data_csv: Path, out_root: Path, prefix: str = "bad"
             features=(*SERVING_SCHEMA.features, FeatureSpec("HbA1c", "float", 0, 20)),
         )
         train_and_package(data_csv, d, version=version, params=small)
-        _rewrite_manifest(d, feature_schema=other.to_dict(), feature_schema_fingerprint=other.fingerprint)
+        _rewrite_manifest(
+            d, feature_schema=other.to_dict(), feature_schema_fingerprint=other.fingerprint
+        )
     elif kind == "lying_schema":
         train_and_package(data_csv, d, version=version, params=small, drop_features=["Insulin"])
     elif kind == "nan_output":

@@ -1,7 +1,21 @@
 venv/
+.venv/
 __pycache__/
 *.pyc
+.git/
 .dvc/
-data/
-mlruns/
+.env
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+registry/
+demo_run/
 mlflow.db
+data/raw/
+data/processed/
+data/public/
+# keep only the pinned legacy model from mlruns (needed by the seed stage)
+mlruns/*
+!mlruns/0
+mlruns/0/*
+!mlruns/0/models

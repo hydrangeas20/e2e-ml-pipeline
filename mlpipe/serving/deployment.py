@@ -22,10 +22,9 @@ traffic, multi-process or multi-host coordination.
 
 from __future__ import annotations
 
+import contextlib
 import logging
-import math
 import threading
-import time
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
@@ -233,10 +232,8 @@ class DeploymentController:
         if a is not None:
             self.metrics.active_model.labels(a.version, a.sha256[:16], self.schema.version).set(1)
         self.metrics.probation.set(1 if self._gate else 0)
-        try:
+        with contextlib.suppress(RegistryError):
             self.metrics.deployment_generation.set(self.registry.read_state()["generation"])
-        except RegistryError:
-            pass
 
     def readiness(self) -> dict[str, Any]:
         a = self._active
@@ -328,17 +325,25 @@ class DeploymentController:
         if st is None:
             raise DeploymentError("unknown_version", version, 404)
         rep = validate_artifact(
-            self.registry.artifact_dir(version), self.schema, expected_version=version,
+            self.registry.artifact_dir(version),
+            self.schema,
+            expected_version=version,
             limits=self.limits,
         )
         summary = rep.summary()
         if st == State.REGISTERED:
             to = State.VALIDATED if rep.passed else State.REJECTED
             self.registry.transition(
-                version, to, action="validate", correlation_id=cid,
-                validation=summary, failure_reason=summary["failure_reason"],
+                version,
+                to,
+                action="validate",
+                correlation_id=cid,
+                validation=summary,
+                failure_reason=summary["failure_reason"],
             )
-            self.metrics.deployment_events.labels("validate", "passed" if rep.passed else "rejected").inc()
+            self.metrics.deployment_events.labels(
+                "validate", "passed" if rep.passed else "rejected"
+            ).inc()
             if not rep.passed:
                 self.metrics.model_load_failures.labels("validate").inc()
         return {**summary, "state": str(self.registry.state_of(version))}
@@ -354,9 +359,13 @@ class DeploymentController:
                 raise DeploymentError("validation_failed", str(res["failure_reason"]), 422)
             lm, rep = self._load(version, "bootstrap")
             if lm is None:
-                raise DeploymentError("validation_failed", str(rep.summary()["failure_reason"]), 422)
+                raise DeploymentError(
+                    "validation_failed", str(rep.summary()["failure_reason"]), 422
+                )
             self.registry.apply_many(
-                [(version, State.ACTIVE)], action="bootstrap", correlation_id=cid,
+                [(version, State.ACTIVE)],
+                action="bootstrap",
+                correlation_id=cid,
                 pointer_updates={"active": version, "known_good": version, "probation": None},
                 validation=rep.summary(),
             )
@@ -368,7 +377,10 @@ class DeploymentController:
             return {"result": "active", "version": version}
 
     def promote(
-        self, version: str, *, expected_generation: int | None = None,
+        self,
+        version: str,
+        *,
+        expected_generation: int | None = None,
         correlation_id: str | None = None,
     ) -> dict[str, Any]:
         cid = correlation_id or uuid.uuid4().hex
@@ -398,58 +410,92 @@ class DeploymentController:
         if st == State.REGISTERED:
             if not self.validate(version, correlation_id=cid)["passed"]:
                 self.metrics.deployment_events.labels("promote", "rejected").inc()
-                return {"result": "rejected", "version": version,
-                        "validation": validate_artifact(self.registry.artifact_dir(version),
-                                                        self.schema).summary()}
+                return {
+                    "result": "rejected",
+                    "version": version,
+                    "validation": validate_artifact(
+                        self.registry.artifact_dir(version), self.schema
+                    ).summary(),
+                }
             st = State.VALIDATED
         if st != State.VALIDATED:
             raise DeploymentError("invalid_state", f"{version} is {st}; must be validated")
 
-        self.registry.transition(version, State.CANDIDATE, action="select_candidate",
-                                 correlation_id=cid)
+        self.registry.transition(
+            version, State.CANDIDATE, action="select_candidate", correlation_id=cid
+        )
         lm, rep = self._load(version, "promote")
         if lm is None:
             summary = rep.summary()
-            self.registry.transition(version, State.REJECTED, action="promote_rejected",
-                                     correlation_id=cid, validation=summary,
-                                     failure_reason=summary["failure_reason"])
+            self.registry.transition(
+                version,
+                State.REJECTED,
+                action="promote_rejected",
+                correlation_id=cid,
+                validation=summary,
+                failure_reason=summary["failure_reason"],
+            )
             self.metrics.deployment_events.labels("promote", "rejected").inc()
-            log(logger, logging.WARNING, "promotion rejected", version=version,
-                reason=summary["failure_reason"], correlation_id=cid)
+            log(
+                logger,
+                logging.WARNING,
+                "promotion rejected",
+                version=version,
+                reason=summary["failure_reason"],
+                correlation_id=cid,
+            )
             return {"result": "rejected", "version": version, "validation": summary}
 
         prev = self._active
         try:
             out = self.registry.apply_many(
                 [(version, State.ACTIVE), (prev.version, State.RETIRED)],
-                action="promote", correlation_id=cid,
+                action="promote",
+                correlation_id=cid,
                 pointer_updates={
                     "active": version,
                     "known_good": self._known_good.version,
-                    "probation": {"version": version, "started_at": _now(),
-                                  "gate": GateConfig.from_settings(self.settings).__dict__},
+                    "probation": {
+                        "version": version,
+                        "started_at": _now(),
+                        "gate": GateConfig.from_settings(self.settings).__dict__,
+                    },
                 },
                 validation=rep.summary(),
             )
         except Exception as e:
             # Interrupted promotion: nothing in memory changed; put the version back.
             self.metrics.deployment_events.labels("promote", "failed").inc()
-            try:
-                self.registry.transition(version, State.VALIDATED, action="promote_aborted",
-                                         correlation_id=cid, failure_reason=repr(e)[:300])
-            except Exception:
-                pass
+            with contextlib.suppress(Exception):
+                self.registry.transition(
+                    version,
+                    State.VALIDATED,
+                    action="promote_aborted",
+                    correlation_id=cid,
+                    failure_reason=repr(e)[:300],
+                )
             raise DeploymentError("promotion_failed", f"state commit failed: {e!r}", 500) from e
         with self._state_lock:
             self._gate = HealthGate(GateConfig.from_settings(self.settings))
             self._active = lm
         self._publish_active()
         self.metrics.deployment_events.labels("promote", "ok").inc()
-        log(logger, logging.INFO, "promoted", version=version, previous=prev.version,
-            known_good=self._known_good.version, correlation_id=cid)
-        return {"result": "active_on_probation", "version": version, "previous": prev.version,
-                "known_good": self._known_good.version,
-                "generation": out["state"]["generation"]}
+        log(
+            logger,
+            logging.INFO,
+            "promoted",
+            version=version,
+            previous=prev.version,
+            known_good=self._known_good.version,
+            correlation_id=cid,
+        )
+        return {
+            "result": "active_on_probation",
+            "version": version,
+            "previous": prev.version,
+            "known_good": self._known_good.version,
+            "generation": out["state"]["generation"],
+        }
 
     # -- health gate / rollback ---------------------------------------------------------
 
@@ -462,17 +508,23 @@ class DeploymentController:
                 return  # outcome from a model that is no longer the probation subject
             decision, why = gate.record(ok, latency_ms)
             if decision == "fail":
-                self._rollback_locked(trigger="health_gate", reason=why,
-                                      correlation_id=uuid.uuid4().hex, gate=gate.snapshot())
+                self._rollback_locked(
+                    trigger="health_gate",
+                    reason=why,
+                    correlation_id=uuid.uuid4().hex,
+                    gate=gate.snapshot(),
+                )
             elif decision == "pass":
                 self._finish_probation(lm, why, gate)
 
     def _finish_probation(self, lm: LoadedModel, why: str, gate: HealthGate) -> None:
         try:
             self.registry.apply_many(
-                [(lm.version, State.ACTIVE)], action="probation_passed",
+                [(lm.version, State.ACTIVE)],
+                action="probation_passed",
                 pointer_updates={"known_good": lm.version, "probation": None},
-                gate=gate.snapshot(), reason=why,
+                gate=gate.snapshot(),
+                reason=why,
             )
         except Exception as e:
             self.persist_degraded = f"probation_passed not persisted: {e!r}"[:300]
@@ -481,48 +533,89 @@ class DeploymentController:
         self._publish_active()
         self.metrics.deployment_events.labels("probation", "passed").inc()
 
-    def rollback(self, *, reason: str, trigger: str = "manual",
-                 correlation_id: str | None = None) -> dict[str, Any]:
+    def rollback(
+        self, *, reason: str, trigger: str = "manual", correlation_id: str | None = None
+    ) -> dict[str, Any]:
         with self._state_lock:
-            return self._rollback_locked(trigger=trigger, reason=reason,
-                                         correlation_id=correlation_id or uuid.uuid4().hex)
+            return self._rollback_locked(
+                trigger=trigger, reason=reason, correlation_id=correlation_id or uuid.uuid4().hex
+            )
 
-    def _rollback_locked(self, *, trigger: str, reason: str, correlation_id: str,
-                         **details: Any) -> dict[str, Any]:
+    def _rollback_locked(
+        self, *, trigger: str, reason: str, correlation_id: str, **details: Any
+    ) -> dict[str, Any]:
         bad, good = self._active, self._known_good
         if bad is None or good is None or self._gate is None or bad is good:
             self.metrics.deployment_events.labels("rollback", "noop").inc()
-            return {"result": "noop", "active": bad.version if bad else None,
-                    "reason": "nothing on probation; active is known-good"}
+            return {
+                "result": "noop",
+                "active": bad.version if bad else None,
+                "reason": "nothing on probation; active is known-good",
+            }
         # Memory first: stop serving the bad version even if persistence fails.
         self._active = good
         self._gate = None
-        self._rollback_persist(bad.version, good, trigger=trigger, reason=reason,
-                               correlation_id=correlation_id, **details)
+        self._rollback_persist(
+            bad.version,
+            good,
+            trigger=trigger,
+            reason=reason,
+            correlation_id=correlation_id,
+            **details,
+        )
         self._publish_active()
         self.metrics.rollbacks.labels(trigger).inc()
-        log(logger, logging.WARNING, "rolled back", bad=bad.version, restored=good.version,
-            trigger=trigger, reason=reason, correlation_id=correlation_id)
-        return {"result": "rolled_back", "from": bad.version, "to": good.version,
-                "trigger": trigger, "reason": reason}
+        log(
+            logger,
+            logging.WARNING,
+            "rolled back",
+            bad=bad.version,
+            restored=good.version,
+            trigger=trigger,
+            reason=reason,
+            correlation_id=correlation_id,
+        )
+        return {
+            "result": "rolled_back",
+            "from": bad.version,
+            "to": good.version,
+            "trigger": trigger,
+            "reason": reason,
+        }
 
-    def _rollback_persist(self, bad_version: str, good: LoadedModel, *, trigger: str,
-                          reason: str, correlation_id: str, **details: Any) -> None:
+    def _rollback_persist(
+        self,
+        bad_version: str,
+        good: LoadedModel,
+        *,
+        trigger: str,
+        reason: str,
+        correlation_id: str,
+        **details: Any,
+    ) -> None:
         verified = self._verify_recovery(good)
         try:
             self.registry.apply_many(
                 [(bad_version, State.ROLLED_BACK), (good.version, State.ACTIVE)],
-                action="rollback", correlation_id=correlation_id,
-                pointer_updates={"active": good.version, "known_good": good.version,
-                                 "probation": None},
-                rollback_trigger=trigger, failure_reason=reason,
-                recovery_result="verified" if verified else "smoke_failed", **details,
+                action="rollback",
+                correlation_id=correlation_id,
+                pointer_updates={
+                    "active": good.version,
+                    "known_good": good.version,
+                    "probation": None,
+                },
+                rollback_trigger=trigger,
+                failure_reason=reason,
+                recovery_result="verified" if verified else "smoke_failed",
+                **details,
             )
             self.persist_degraded = None
         except Exception as e:
             self.persist_degraded = f"rollback not persisted: {e!r}"[:300]
             log(logger, logging.ERROR, "rollback persist failed", error=repr(e)[:200])
-        self.metrics.deployment_events.labels("rollback", "ok" if verified else "smoke_failed").inc()
+        self.metrics.deployment_events.labels(
+            "rollback", "ok" if verified else "smoke_failed"
+        ).inc()
 
     def _verify_recovery(self, lm: LoadedModel) -> bool:
         from mlpipe.features import transform
@@ -533,11 +626,3 @@ class DeploymentController:
             return check_outputs(lm.estimator.predict_proba(X), len(X)) is None
         except Exception:
             return False
-
-
-def finite(x: float) -> bool:
-    return math.isfinite(x)
-
-
-def monotonic_ms(t0: float) -> float:
-    return (time.perf_counter() - t0) * 1000

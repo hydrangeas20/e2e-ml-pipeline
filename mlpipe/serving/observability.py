@@ -86,10 +86,16 @@ class Metrics:
         )
         self.in_flight = Gauge("mlpipe_in_flight_requests", "Admitted predict requests", registry=r)
         self.rejected = Counter(
-            "mlpipe_admission_rejected_total", "Requests refused at admission", ["reason"], registry=r
+            "mlpipe_admission_rejected_total",
+            "Requests refused at admission",
+            ["reason"],
+            registry=r,
         )
         self.model_load_failures = Counter(
-            "mlpipe_model_load_failures_total", "Model load/validation failures", ["stage"], registry=r
+            "mlpipe_model_load_failures_total",
+            "Model load/validation failures",
+            ["stage"],
+            registry=r,
         )
         self.feature_validation_failures = Counter(
             "mlpipe_feature_validation_failures_total", "Rejected request payloads", registry=r
@@ -100,9 +106,7 @@ class Metrics:
         self.deployment_events = Counter(
             "mlpipe_deployment_events_total", "Deployment actions", ["action", "result"], registry=r
         )
-        self.rollbacks = Counter(
-            "mlpipe_rollbacks_total", "Rollbacks", ["trigger"], registry=r
-        )
+        self.rollbacks = Counter("mlpipe_rollbacks_total", "Rollbacks", ["trigger"], registry=r)
         self.active_model = Gauge(
             "mlpipe_active_model_info",
             "1 for the model version currently serving",

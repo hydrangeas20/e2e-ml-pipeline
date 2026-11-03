@@ -229,9 +229,7 @@ def load_estimator(artifact_dir: Path, manifest: Manifest) -> Any:
 # the same bytes (preserved in mlruns/0/models/m-ac8443.../artifacts/model.pkl).
 LEGACY_PICKLE_MD5 = "333ad164dacb32f0d8844a27d7876c67"
 LEGACY_PICKLE_SHA256 = "57f513c612dd6398552cfb78a103bdab069d54115a4e1c2ab7684850535febda"
-LEGACY_PICKLE_PATH = Path(
-    "mlruns/0/models/m-ac8443cec0b64c03929f2d97d344b3c5/artifacts/model.pkl"
-)
+LEGACY_PICKLE_PATH = Path("mlruns/0/models/m-ac8443cec0b64c03929f2d97d344b3c5/artifacts/model.pkl")
 
 
 def load_legacy_pickle(path: Path) -> Any:
@@ -241,4 +239,4 @@ def load_legacy_pickle(path: Path) -> Any:
     sha = hashlib.sha256(data).hexdigest()
     if md5 != LEGACY_PICKLE_MD5 or sha != LEGACY_PICKLE_SHA256:
         raise ArtifactError("legacy_pin", f"md5 {md5} / sha256 {sha[:12]} do not match pins")
-    return pickle.loads(data)  # noqa: S301 - pinned, owner-produced artifact
+    return pickle.loads(data)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sqlite3
@@ -25,10 +26,12 @@ from tests.conftest import DATA, ROOT
 
 def test_legacy_import_preserves_logged_mlflow_metrics(artifacts: dict[str, Path]) -> None:
     m = json.loads((artifacts["v1-legacy-rf"] / "manifest.json").read_text())
-    db = sqlite3.connect(ROOT / "mlflow.db")
-    logged = dict(db.execute(
-        "select key, value from metrics where run_uuid='dce997fa1be54b54a5013d93ef000865'"
-    ).fetchall())
+    with contextlib.closing(sqlite3.connect(ROOT / "mlflow.db")) as db:
+        logged = dict(
+            db.execute(
+                "select key, value from metrics where run_uuid='dce997fa1be54b54a5013d93ef000865'"
+            ).fetchall()
+        )
     for k in ("accuracy", "f1", "roc_auc", "pr_auc"):
         assert m["metrics"][k] == pytest.approx(logged[k], abs=1e-12), k
     assert m["provenance"]["legacy_md5"] == "333ad164dacb32f0d8844a27d7876c67"
@@ -92,8 +95,15 @@ def test_untrusted_types_are_refused_not_loaded(tmp_path: Path) -> None:
 
     est = make_pipeline(FunctionTransformer(), LogisticRegression(max_iter=500)).fit(X, y)
     est.steps[0][1].func = os.getcwd  # smuggle a callable into a fitted, valid model
-    m = package_model(est, tmp_path / "evil", model_version="evil", schema=SERVING_SCHEMA,
-                      training={}, metrics={}, reference_stats={})
+    m = package_model(
+        est,
+        tmp_path / "evil",
+        model_version="evil",
+        schema=SERVING_SCHEMA,
+        training={},
+        metrics={},
+        reference_stats={},
+    )
     with pytest.raises(ArtifactError, match="untrusted_types"):
         load_estimator(tmp_path / "evil", m)
     rep = validate_artifact(tmp_path / "evil", SERVING_SCHEMA)

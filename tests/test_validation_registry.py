@@ -34,8 +34,14 @@ def test_good_artifacts_pass_every_check(artifacts: dict[str, Path], version: st
     rep = validate_artifact(artifacts[version], SERVING_SCHEMA)
     assert rep.passed, rep.summary()
     assert [c.name for c in rep.checks] == [
-        "integrity", "metadata", "schema_compatibility", "load", "model_features",
-        "prediction_contract", "numerical_validity", "resources",
+        "integrity",
+        "metadata",
+        "schema_compatibility",
+        "load",
+        "model_features",
+        "prediction_contract",
+        "numerical_validity",
+        "resources",
     ]
 
 
@@ -63,8 +69,9 @@ def test_state_machine_rejects_invalid_transitions(registry: Registry) -> None:
 def test_stale_generation_refused(registry: Registry) -> None:
     gen = registry.read_state()["generation"]
     with pytest.raises(StaleGenerationError):
-        registry.transition("v2-rf", State.VALIDATED, action="validate",
-                            expected_generation=gen - 1)
+        registry.transition(
+            "v2-rf", State.VALIDATED, action="validate", expected_generation=gen - 1
+        )
     registry.transition("v2-rf", State.VALIDATED, action="validate", expected_generation=gen)
 
 
