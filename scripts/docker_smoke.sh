@@ -26,8 +26,10 @@ curl -fsS -X POST "http://127.0.0.1:$PORT/predict" -H 'content-type: application
 code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:$PORT/predict" \
   -H 'content-type: application/json' -d '{"Glucose":"x"}')
 echo "invalid payload -> $code"; [ "$code" = 422 ]
-curl -fsS -H "Authorization: Bearer smoke-admin-token-0123456789" \
-  "http://127.0.0.1:$PORT/admin/deployment" | head -c 300; echo
+# capture first: piping curl into `head` raises SIGPIPE (exit 141) under pipefail
+dep=$(curl -fsS -H "Authorization: Bearer smoke-admin-token-0123456789" \
+  "http://127.0.0.1:$PORT/admin/deployment")
+echo "${dep:0:300}"
 
 $DOCKER stop -t 20 "$NAME" >/dev/null
 $DOCKER logs "$NAME" 2>&1 | grep -q '"msg": "service stopped"'

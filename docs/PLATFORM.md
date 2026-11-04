@@ -70,8 +70,10 @@ registered ──► validated ──► candidate ──► active ──► re
 ```
 
 - `validated → active` is used only by `bootstrap`, when nothing is active yet.
-- `candidate → validated` is used only when a promotion is interrupted.
-- `rejected` and `rolled_back` are terminal. To ship a fix, register a new version.
+- `candidate → validated` is used when a promotion is interrupted, and on startup for candidates left by a crashed promotion (`candidate_released`).
+- `rejected` and `rolled_back` are terminal. To ship a fix, register a new version. An artifact whose bytes (sha256) equal a rejected or rolled-back version is refused under any name (`known_bad_artifact`).
+- **Invariant**, checked before every commit (`Registry.check_invariants`): exactly the version named by `active` is in state `active`, and `known_good` is `active` or `retired`. A write that would break it is refused.
+- **Journal generations** are unique. A generation that was journaled but never committed (failure or crash between the two) is recorded in `aborted_generations` and listed by `mlpipe state` under `uncommitted_events`.
 
 **Pointers** in `state.json`:
 
@@ -84,6 +86,7 @@ registered ──► validated ──► candidate ──► active ──► re
 
 The design is a **single-slot atomic reference swap with a probation window**. It is not a canary: there is no traffic splitting, and none is claimed.
 
+0. **Reconcile.** If an earlier durable write failed after memory changed (see 5), it is retried first. If it still fails, promotion is refused with `state_degraded` (503).
 1. **`promote(version, expected_generation?)`**
    - Refused (409) if:
      - another promotion holds the lock;
@@ -94,6 +97,8 @@ The design is a **single-slot atomic reference swap with a probation window**. I
 2. **`validated → candidate`.** All checks re-run against the bytes on disk, which catches modification after validation.
    - Failure → `rejected`. The active model is untouched.
 3. **Commit, then swap.** `candidate → active` and `previous active → retired` are committed in one generation, with `probation` set. Only then does the in-memory reference move. The known-good model stays loaded.
+   - If the commit raises but `state.json` shows it landed (e.g. the directory fsync failed after the rename), the activation is completed so that memory matches disk.
+   - Bytes identical to a known-bad version are rejected here too (`not_known_bad`).
 4. **Probation gate.** It counts only requests served by the probation version, identified by object identity, so late outcomes from the old model are ignored.
 
    | Rule | Default | Demo |
@@ -108,11 +113,15 @@ The design is a **single-slot atomic reference swap with a probation window**. I
    - Memory is updated first: stop serving the bad model, even if the disk is failing.
    - Then one generation is committed: `bad → rolled_back`, `known_good → active`, `probation = null`.
    - The restored model is smoke-tested; the result is recorded as `recovery_result: verified | smoke_failed`.
+   - If that write fails, the service keeps serving known-good, `/readyz` reports `"degraded": true` (still ready), and the write is kept and retried before the next promotion. A restart also heals, because `state.json` still shows probation.
    - Rollback is idempotent: with nothing on probation it is a recorded `noop`.
 6. **Restart recovery.**
    - Restart with `probation` still set → restore known-good (`restart_during_probation`).
    - Active fails to load but known-good loads → restore (`active_load_failed_at_startup`).
    - Neither loads → not ready (503) with the reason.
+   - Probation set but the known-good fails to load → **not ready**. The candidate is never served without a fallback, and the probation is left on disk for the operator.
+   - Leftover `candidate` versions are released to `validated`.
+   - The full crash matrix (process killed at each transaction boundary, then restarted) is in [REVIEW.md §3](REVIEW.md#3-crash-recovery-matrix-teststest_crash_recoverypy).
 
 **Quality is not inferred from the gate.** Labels arrive late. The gate measures serving health only. Predictive quality needs labelled outcomes and the diagnosis workflow (§6).
 
@@ -129,7 +138,11 @@ The design is a **single-slot atomic reference swap with a probation window**. I
 - **Admission.**
   - `max_concurrency` inference threads plus `max_queue` waiting; beyond that, an immediate 429.
   - A slot is released when the thread finishes, so capacity stays bounded even after client timeouts.
-- **Timeouts.** `request_timeout_s` → 504. *Limitation:* Python threads cannot be interrupted, so the computation runs to completion, holding its slot, and its result is discarded. A hard deadline would need a killable worker process.
+- **Timeouts.** `request_timeout_s` → 504. *Limitation:* Python threads cannot be interrupted, so the computation runs to completion, holding its slot, and its result is discarded.
+  - Discarded results are not audited, not counted as predictions, and not fed to drift monitoring. They are counted in `mlpipe_abandoned_inference_total{outcome}`.
+  - If the audit write wins the race against the timeout, the result is returned instead.
+  - A hard deadline would need a killable worker process.
+- **One server per registry.** The serving process holds an exclusive lock on `<registry>/.serve.lock`. A second server, or a second uvicorn worker, fails at startup.
 - **Health.**
   - `GET /livez`: the process is alive.
   - `GET /readyz` (and `/health`): a model is loaded, its artifact on disk still matches its hash, the registry is readable, and the service is not draining.
@@ -149,7 +162,8 @@ The design is a **single-slot atomic reference swap with a probation window**. I
 | `mlpipe_predictions_total` | model_version |
 | `mlpipe_prediction_errors_total` | model_version, reason (`injected`, `invalid_output`, `feature_pipeline`, `timeout`, `internal`, `audit`) |
 | `mlpipe_request_latency_seconds` (histogram) | route |
-| `mlpipe_in_flight_requests` | — |
+| `mlpipe_in_flight_requests` (includes abandoned computations still running) | — |
+| `mlpipe_abandoned_inference_total` | outcome (`completed`, `failed`, `cancelled`) |
 | `mlpipe_admission_rejected_total` | reason (`overloaded`, `draining`, `not_ready`) |
 | `mlpipe_model_load_failures_total` | stage (`startup`, `validate`, `promote`, `bootstrap`) |
 | `mlpipe_feature_validation_failures_total` | — |
@@ -177,6 +191,10 @@ Logs are one JSON object per line, carrying `request_id`. Keys such as `features
   1. Look at `mlpipe_model_load_failures_total{stage}`.
   2. Run `mlpipe events` to find the `failure_reason` (integrity, untrusted types, schema, load, numerical).
   3. `mlpipe validate <version>` reproduces it offline.
+- **`/readyz` shows `degraded: true`.** A rollback or probation result did not reach `state.json` (disk full, permissions). Serving is correct. Fix the disk, then either promote (reconciles first) or restart (restores known-good).
+- **503 `restart during probation … known-good … failed to load`.** Restore `models/<known_good>/` from backup (or re-import it), then restart. Do not force the candidate active: it never completed probation.
+- **Startup error `serving lock … held by pid N`.** Another server is already using this registry. Stop it, or point this one at a different `MLPIPE_REGISTRY_DIR`. Never run `--workers > 1`.
+- **`mlpipe state` lists `uncommitted_events`.** A write was journaled and then failed or crashed before its commit. These events are history, not state. The `aborted_generations` field lists their generation numbers.
 - **Unexpected prediction changes**
   1. Each response and audit record carries `model_version`, `model_sha256` and `config_version`. Check whether they changed (`mlpipe events` shows when).
   2. If they did not, check `mlpipe_feature_mean_shift` and `/admin/deployment` → `proxy_monitoring` for input shift.
@@ -204,11 +222,14 @@ All settings come from `MLPIPE_*` environment variables (`mlpipe/config.py`) and
 
 - `data/raw/data.csv` is tracked by DVC (md5 `739f3c91…`) on the DagsHub remote, and is not reachable without credentials.
 - The committed holdout split `data/splits/test.csv` (154 rows) and the legacy model are in git. The legacy model's MLflow metrics are reproduced exactly from them (`test_legacy_import_preserves_logged_mlflow_metrics`).
+- The committed `src/train.py` and `src/evaluate.py` do not match the md5 and size that `dvc.lock` pins for them. This predates this PR (since `2a077b8`). The code that produced the pinned model is therefore not in git, and training is not reproducible from this repository even with the raw data. Evaluation of the legacy model is reproducible (see [REVIEW.md §7](REVIEW.md#7-reproducibility-separated)).
 - `mlpipe fetch-data` downloads the public copy linked in the README, pinned by sha256 (`bf81d06e…`). It differs from the DVC copy: 153 of the 154 holdout rows appear in it, and its md5 differs. New candidates trained on it are therefore **not** comparable, metric for metric, with the legacy model.
 
 ## 9. Limitations
 
-- Single process, single host. fcntl locks and the JSONL journal are not multi-host safe. Running multiple uvicorn workers would give each worker its own active-model view: **do not run `--workers > 1`**.
+- Single process, single host. fcntl locks and the JSONL journal are not multi-host safe. A second process on the same host is refused by the serving lock. Two hosts sharing a network filesystem are **not** protected, because flock semantics there are unreliable.
+- Crash recovery is tested against process crashes (`os._exit` at named points) only, not against power loss or storage that ignores fsync.
+- No time-based end to probation. With no traffic, a candidate stays on probation indefinitely and blocks further promotions. A restart in that state rolls it back.
 - No canary, shadow or traffic splitting. Probation exposes 100% of traffic to the candidate until the gate decides; the gate bounds the damage, at 5 consecutive failures by default.
 - Integrity only, no signatures. The registry directory must be writable only by the deployer.
 - Timeouts do not cancel computation (§4).
