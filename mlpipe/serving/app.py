@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import logging
+import math
 import re
 import threading
 import time
@@ -32,7 +33,7 @@ from fastapi import Depends, FastAPI, Header, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from mlpipe.config import Settings
 from mlpipe.features import FeatureValidationError, transform
@@ -67,6 +68,25 @@ class Features(BaseModel):
 
 
 assert list(Features.model_fields) == SERVING_SCHEMA.names, "request model drifted from schema"
+
+_INT_FEATURES = tuple(f.name for f in SERVING_SCHEMA.features if f.dtype == "int")
+
+
+class LegacyFeatures(Features):
+    """Legacy ``/predict`` only: integer features also accept exact-integer floats.
+
+    A finite float with no fractional part (``148.0``, ``1e2``) is converted to the
+    integer before the strict integer check and bounds apply. Everything else
+    ``Features`` rejects is still rejected: ``148.5``, ``"148"``, booleans, NaN/inf,
+    out-of-range values, unknown or missing fields. ``/v1/predict`` does not use this.
+    """
+
+    @field_validator(*_INT_FEATURES, mode="before")
+    @classmethod
+    def _exact_integer_float(cls, v: object) -> object:
+        if isinstance(v, float) and math.isfinite(v) and v.is_integer():
+            return int(v)
+        return v
 
 
 class PredictRequest(BaseModel):
@@ -406,9 +426,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             predictions=preds,
         )
 
-    @app.post("/predict", response_model=LegacyPredictResponse)
-    async def predict_legacy(body: Features) -> LegacyPredictResponse:
-        """Backward-compatible with the original API: flat payload, prediction+confidence."""
+    @app.post("/predict", response_model=LegacyPredictResponse, deprecated=True)
+    async def predict_legacy(body: LegacyFeatures) -> LegacyPredictResponse:
+        """Deprecated: use ``POST /v1/predict``. Flat payload, prediction + confidence.
+
+        Differs from ``/v1/predict`` only in accepting exact-integer floats (e.g.
+        ``148.0``) for integer features. No removal date has been set.
+        """
         lm, preds = await serve([body.model_dump()], "/predict")
         p = preds[0]
         return LegacyPredictResponse(

@@ -17,7 +17,7 @@ Line numbers refer to `a0c9a9c` ("was") and to the review head ("now").
 
 | # | Sev | Status | Finding | Location (was → now) | Fix |
 |---|---|---|---|---|---|
-| R1 | **High** | Confirmed | **Restart during probation with an unloadable known-good served the unproven candidate with no health gate, and made it the in-memory known-good.** The startup fallback path loaded `active` and set `_known_good = good_lm or lm`. | `deployment.py:281,317` → `:305` | Fail closed: not ready, explicit reason, probation left on disk for the operator. |
+| R1 | **High** | Confirmed | **Restart during probation with an unloadable known-good served the unproven candidate with no health gate, and made it the in-memory known-good.** The startup fallback path loaded `active` and set `_known_good = good_lm or lm`. | `deployment.py:281,317` → `:305` | Fail closed: not ready, explicit reason, probation left on disk for the operator. **Policy confirmed by the owner (2026-11-03)**: an outage is preferred over serving an unverified candidate. Guarded by `test_r1_…` and `test_missing_known_good_on_restart_during_probation_fails_closed`. |
 | R2 | **High** | Confirmed | **After a rollback whose state write failed, the next promotion went ahead on stale durable state.** `state.json` ended with two versions in `active` (the rolled-back `v2-rf` and the new candidate). The `persist_degraded` flag was informational only; nothing retried or blocked. | `deployment.py:530,614` → `:354,603,677` | The failed write is kept as a pending closure. `promote()` reconciles first and refuses with `state_degraded` (503) while it still fails. Readiness reports `degraded`. |
 | R12 | **High** | Confirmed | **The registry accepted writes that break the single-active invariant.** Same-state transitions (`retired → retired`) were allowed, and the pointers were never checked against version states. This is why R2 could happen. | `registry.py:273` → `:190,380` | `check_invariants()` before every commit: exactly the `active` pointer is ACTIVE; `known_good` is ACTIVE or RETIRED. Same-state transitions are allowed only for ACTIVE. |
 | R10 | Medium | Confirmed | **A promote commit that reached `state.json` but raised afterwards left disk and memory disagreeing.** Example: a failed directory fsync after the rename. Disk said `v2` was active on probation; memory kept serving `v1`; `promote_aborted` failed silently. | `deployment.py:467` → `:526` | Re-read state after the error. If the commit landed, complete the activation; otherwise abort as before. |
@@ -32,7 +32,7 @@ Line numbers refer to `a0c9a9c` ("was") and to the review head ("now").
 | T1 | Low | Confirmed | **`scripts/docker_smoke.sh` exited 141 (SIGPIPE).** `curl … \| head -c 300` under `pipefail` failed whenever the response exceeded the read. This is why "Docker green" was not repeatable locally. | `docker_smoke.sh:28` → `:29` | Capture into a variable, then truncate. |
 | H1 | Low | Hypothesis (by inspection) | **Gate bookkeeping, including a rollback's fsync'd writes, and readiness re-hashing ran on the asyncio event loop**, stalling all requests for the I/O duration. Not measured. | `app.py:332`, readiness → `app.py:388` | `asyncio.to_thread` for `record_outcome` and `/readyz`. |
 | P1 | Info | Confirmed, **pre-existing** (not introduced by this PR) | **`dvc.lock` pins md5/size for `src/train.py` (5,047 B) and `src/evaluate.py` (2,551 B) that match neither the committed files (5,201 / 2,703 B) nor their LF-normalised forms.** The code that produced the pinned model is not in git. | `dvc.lock`, `src/` since `2a077b8` | Documented. Training is not reproducible from the repository. |
-| P2 | Info | Confirmed, pre-existing | The demo's `v2-rf` and the test candidates are trained on `data/splits/test.csv`, the legacy *holdout*. Their manifest provenance says so, but their metrics are not comparable with `v1-legacy-rf`. | `mlpipe/demo.py`, `tests/conftest.py` | Documented. They are fixtures for exercising deployment mechanics, not model candidates. |
+| P2 | Info | Confirmed, pre-existing | The demo's `v2-rf` and the test candidates are trained on `data/splits/test.csv`, the legacy *holdout*. Their manifest provenance says so. | `mlpipe/demo.py`, `tests/conftest.py` | Documented. They are **deployment-testing fixtures**, not validated production candidates. Their metrics are in-sample to the holdout and are not comparable with `v1-legacy-rf`. |
 
 **Verified correct, with no defect found.** At `a0c9a9c`, the 21 new gate and concurrency tests in `tests/test_gate_concurrency.py` already passed. They are characterization tests and now guard against regressions. They cover:
 - attribution under concurrent promotion *and* rollback;
@@ -101,7 +101,7 @@ Order of side effects within one operation: verify → journal (fsync) → `stat
 | Input to `POST /predict` | Original `37995fe` | Now |
 |---|---|---|
 | valid payload | 200 | 200 (identical prediction and confidence; tested) |
-| integer feature as `148.0` | 200 | **422** |
+| integer feature as `148.0` | 200 | **200**, converted to 148 (owner decision, below) |
 | non-integral `148.5` | 200 | **422** |
 | numeric string `"148"` | 200 | **422** |
 | out of bounds (`Glucose: 9999`) | 200 | **422** |
@@ -112,12 +112,23 @@ Order of side effects within one operation: verify → journal (fsync) → `stat
 | keys in a different order | **500** (sklearn feature-order check) | **200** |
 | overload | unbounded | 429 beyond `max_concurrency + max_queue` |
 
-**Recommendation (owner decision; not implemented):**
-- Keep `/v1/predict` strict.
-- Do not loosen `/predict` silently.
-- If existing clients send integral floats, the lowest-risk option is an explicit, documented compatibility rule on the **legacy route only**: accept integral floats (`148.0` → 148) and nothing else. That change is lossless.
-- Accepting strings, NaN or out-of-bounds values would reintroduce silent garbage-in behaviour. Previously those inputs produced predictions with no warning.
-- Versioning is already in place (`/v1/predict`). A deprecation date for `/predict` is preferable to a compatibility mode flag, because a flag doubles the contract surface the tests must cover.
+**Owner decision (2026-11-03), implemented:**
+- `/v1/predict` stays strictly typed. No change.
+- The legacy `/predict` alone accepts a finite float with no fractional part for an integer feature and converts it (`148.0` → 148, `1e2` → 100). The bounds and every other rejection still apply: `148.5`, `"148"`, booleans, `null`, NaN/±Infinity, out-of-range values (including `401.0`), unknown and missing features. The conversion is lossless, and the prediction is identical to sending the integer.
+- `/predict` is marked `deprecated` in the OpenAPI schema. No removal date has been set.
+- Tests: `tests/test_api_compat.py` sends the same inputs to both routes and asserts each route's status. On the previous head, exactly the 6 tests covering the new acceptances and the deprecation flag failed; all rejection cases already passed.
+
+| Input (integer feature) | `/predict` (deprecated) | `/v1/predict` |
+|---|---|---|
+| `148` | 200 | 200 |
+| `148.0`, `1.48e2`, `0.0`, `400.0` | 200 (as integer) | 422 |
+| `148.5`, `148.000001` | 422 | 422 |
+| `"148"`, `"148.0"`, `true`, `null` | 422 | 422 |
+| `NaN`, `Infinity`, `-Infinity` | 422 | 422 |
+| `401`, `401.0`, `-1.0`, `1e300` | 422 | 422 |
+| unknown or missing feature | 422 | 422 |
+
+Float features (`BMI`, `DiabetesPedigreeFunction`) follow the same rules on both routes: any finite number in bounds; NaN/inf rejected.
 
 ## 6. Timeouts and capacity
 
@@ -139,13 +150,14 @@ Order of side effects within one operation: verify → journal (fsync) → `stat
 | Serving | **Reproducible** | `v1-legacy-rf` (skops) gives the same prediction and confidence as the original pickle path (`test_legacy_response_matches_original_implementation`). |
 | Artifact | **Reproducible given the pinned pickle** | Legacy conversion unpickles only after md5 (`dvc.lock`) and sha256 pins match. New training is deterministic: two runs give bit-identical probabilities (`test_training_is_deterministic`). |
 | Evaluation | **Reproducible** for the legacy model | The committed holdout plus the pinned model give the MLflow-logged training-run metrics exactly (`test_legacy_import_preserves_logged_mlflow_metrics`). The fixed `src/evaluate.py`, run as a script on a scratch copy, reproduces evaluate run `96f2e540` on all six metrics. The original crashes with `NameError`. |
-| Training | **Not reproducible** | (a) `data/raw/data.csv` exists only on the DagsHub DVC remote. (b) The committed `src/train.py` is not the version pinned in `dvc.lock` (P1). (c) The public copy differs from the original: in the holdout, the public row at index 3 has `BloodPressure` 66 where the pinned split has 55; the other 153 holdout rows match position for position. The byte size also differs (DVC 23,872 B vs 23,873–23,875 B for CRLF rebuilds of the public file), so there are further differences outside the holdout. The original cannot be reconstructed. |
+| Training | **Not reproducible**: original training cannot currently be reproduced, because neither the DVC-pinned source code nor the original data is available. | (a) `data/raw/data.csv` exists only on the DagsHub DVC remote. (b) The committed `src/train.py` is not the version pinned in `dvc.lock` (P1). (c) The public copy differs from the original: in the holdout, the public row at index 3 has `BloodPressure` 66 where the pinned split has 55; the other 153 holdout rows match position for position. The byte size also differs (DVC 23,872 B vs 23,873–23,875 B for CRLF rebuilds of the public file), so there are further differences outside the holdout. The original cannot be reconstructed. Models trained by `mlpipe train` or the demo are deterministic but are not reproductions of `v1-legacy-rf`. |
 
 ## 8. Verification record
 
 | Check | Before (`a0c9a9c`) | After |
 |---|---|---|
 | `make check` (ruff, `mypy --strict`, pytest, Python 3.12) | 81 passed | **126 passed** |
+| After the owner's API decisions (`tests/test_api_compat.py`, +22) | — | **148 passed** |
 | Review regressions R1–R12 | **12 failed** | 12 passed |
 | Gate/concurrency characterization (21) | 21 passed | 21 passed |
 | Crash-recovery matrix (12, subprocess) | not runnable (no crash points existed) | 12 passed |

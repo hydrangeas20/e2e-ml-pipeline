@@ -21,7 +21,14 @@ make demo                    # bad candidates rejected -> promote -> injected fa
 make prepare && make serve   # legacy model -> skops artifact v1-legacy-rf, then serve on :8000
 ```
 
-The original `POST /predict` payload and `GET /` still work. Responses keep `prediction` and `confidence`, and now also carry `model_version`, `model_sha256`, `config_version` and `request_id`.
+The original `POST /predict` payload and `GET /` still work. Responses keep `prediction` and `confidence`, and now also carry `model_version`, `model_sha256`, `config_version` and `request_id`. `/predict` is deprecated in favour of `POST /v1/predict`, with no removal date set.
+
+Input rules for the two routes:
+- **`/v1/predict`** is strictly typed.
+- **`/predict`** additionally accepts exact-integer floats such as `148.0` for integer features.
+- **Both routes reject** fractional values for integer features, strings, NaN/inf, out-of-range values, and unknown or missing fields.
+
+Original training is not reproducible from this repository: the DVC-pinned training code and data are unavailable. The models trained by `make demo` are deployment-testing fixtures, not production candidates. See [docs/REVIEW.md](docs/REVIEW.md).
 
 Note: the "Example Output" further below (`risk_probability`, `explanation`) describes a planned LLM-explanation layer. It was never part of the served API, and this release does not add it.
 

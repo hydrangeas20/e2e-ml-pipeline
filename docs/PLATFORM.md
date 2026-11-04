@@ -132,8 +132,12 @@ The design is a **single-slot atomic reference swap with a probation window**. I
     - `request_id`, `model_version`, `model_sha256`;
     - `schema_version`, `config_version`, `decision_threshold`;
     - `predictions[]`.
-  - `POST /predict` is the original flat payload. It still returns `prediction` and `confidence` (= max class probability, as before), plus the same metadata.
-  - Strictness: ints must be JSON integers; strings, booleans, NaN/inf and unknown fields are rejected; bounds come from the schema.
+  - `POST /predict` (**deprecated**; no removal date set) is the original flat payload. It still returns `prediction` and `confidence` (= max class probability, as before), plus the same metadata.
+  - Strictness (`/v1/predict`):
+    - integer features must be JSON integers;
+    - strings, booleans, `null`, NaN/inf, and unknown or missing fields are rejected;
+    - bounds come from the schema.
+  - The **only** difference on `/predict`: an integer feature also accepts a finite float with no fractional part, converted before the bounds check (`148.0` → 148). `148.5`, `"148"`, NaN/inf and out-of-range values are rejected on both routes. Full table: [REVIEW.md §5](REVIEW.md#5-api-compatibility).
 - **Errors.** `{"error": {"code", "message", "request_id", "details"}}`. Validation details include field location and message, never the submitted values.
 - **Admission.**
   - `max_concurrency` inference threads plus `max_queue` waiting; beyond that, an immediate 429.
@@ -223,6 +227,8 @@ All settings come from `MLPIPE_*` environment variables (`mlpipe/config.py`) and
 - `data/raw/data.csv` is tracked by DVC (md5 `739f3c91…`) on the DagsHub remote, and is not reachable without credentials.
 - The committed holdout split `data/splits/test.csv` (154 rows) and the legacy model are in git. The legacy model's MLflow metrics are reproduced exactly from them (`test_legacy_import_preserves_logged_mlflow_metrics`).
 - The committed `src/train.py` and `src/evaluate.py` do not match the md5 and size that `dvc.lock` pins for them. This predates this PR (since `2a077b8`). The code that produced the pinned model is therefore not in git, and training is not reproducible from this repository even with the raw data. Evaluation of the legacy model is reproducible (see [REVIEW.md §7](REVIEW.md#7-reproducibility-separated)).
+- **Original training cannot currently be reproduced.** The DVC-pinned training code and the original data are both unavailable. What is reproducible: serving (the legacy model gives the original predictions), artifacts (pinned conversion; deterministic new training), and evaluation of the legacy model. See [REVIEW.md §7](REVIEW.md#7-reproducibility-separated).
+- The demo's `v2-rf` and the test candidates are trained on the committed holdout split (`data/splits/test.csv`). They are **deployment-testing fixtures**, used to exercise validation, promotion and rollback. They are not validated production candidates, and their metrics are not comparable with `v1-legacy-rf`.
 - `mlpipe fetch-data` downloads the public copy linked in the README, pinned by sha256 (`bf81d06e…`). It differs from the DVC copy: 153 of the 154 holdout rows appear in it, and its md5 differs. New candidates trained on it are therefore **not** comparable, metric for metric, with the legacy model.
 
 ## 9. Limitations

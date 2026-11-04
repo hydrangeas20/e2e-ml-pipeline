@@ -3,6 +3,10 @@
 Every step asserts on observed HTTP responses and persisted registry state; the
 script exits non-zero if any expectation fails. Nothing is printed as a success
 unless it was observed.
+
+The candidate ``v2-rf`` is trained on the committed holdout split. It is a
+deployment-testing fixture for exercising promotion and rollback, not a validated
+production candidate; its metrics are not comparable with ``v1-legacy-rf``.
 """
 
 from __future__ import annotations
