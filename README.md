@@ -2,6 +2,36 @@
 
 This repository implements a reproducible end-to-end machine learning pipeline using DVC for data and pipeline versioning, and MLflow (via DagsHub) for experiment tracking and model registry. The project trains and evaluates a Random Forest classifier on a healthcare dataset to predict diabetes outcomes from clinical indicators.
 
+## Platform 2.0: model lifecycle, controlled rollout, automatic rollback
+
+The original pipeline below is unchanged. On top of it, `mlpipe/` adds:
+
+- versioned, integrity-checked model artifacts (skops, not pickle);
+- a registry with an explicit deployment state machine and an fsync'd event journal;
+- pre-promotion validation;
+- a strictly typed serving API with bounded admission, timeouts, a prediction audit log, Prometheus metrics and JSON logs;
+- health-gated probation with **automatic rollback to the last known-good model**.
+
+Architecture, guarantees, runbook and limitations are in [docs/PLATFORM.md](docs/PLATFORM.md).
+
+```bash
+make install                 # hash-pinned dev environment (requirements/dev.lock)
+make check                   # ruff + mypy --strict + pytest (incl. a real-server rollout test)
+make demo                    # bad candidates rejected -> promote -> injected failure -> auto-rollback
+make prepare && make serve   # legacy model -> skops artifact v1-legacy-rf, then serve on :8000
+```
+
+The original `POST /predict` payload and `GET /` still work. Responses keep `prediction` and `confidence`, and now also carry `model_version`, `model_sha256`, `config_version` and `request_id`. `/predict` is deprecated in favour of `POST /v1/predict`, with no removal date set.
+
+Input rules for the two routes:
+- **`/v1/predict`** is strictly typed.
+- **`/predict`** additionally accepts exact-integer floats such as `148.0` for integer features.
+- **Both routes reject** fractional values for integer features, strings, NaN/inf, out-of-range values, and unknown or missing fields.
+
+Original training is not reproducible from this repository: the DVC-pinned training code and data are unavailable. The models trained by `make demo` are deployment-testing fixtures, not production candidates. See [docs/REVIEW.md](docs/REVIEW.md).
+
+Note: the "Example Output" further below (`risk_probability`, `explanation`) describes a planned LLM-explanation layer. It was never part of the served API, and this release does not add it.
+
 ## Overview
 
 This project demonstrates how to build a production-style ML workflow with:
