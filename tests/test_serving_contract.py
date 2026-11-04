@@ -156,6 +156,7 @@ def test_admin_requires_token(
 ) -> None:
     c = client_factory()
     assert c.get("/admin/deployment", headers={"Authorization": "Bearer wrong"}).status_code == 401
+    c.__exit__(None, None, None)  # one server per registry (serving lock)
     off = client_factory(admin_token=None)
     assert off.get("/admin/deployment").status_code == 403
 

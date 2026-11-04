@@ -27,15 +27,17 @@ import logging
 import threading
 import uuid
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Any, Literal, NoReturn
 
 import numpy as np
 import pandas as pd
 
 from mlpipe.artifacts import Manifest, sha256_file
 from mlpipe.config import Settings
+from mlpipe.crash import crashpoint
 from mlpipe.features import standardized_mean_shift
 from mlpipe.registry import Registry, RegistryError, State
 from mlpipe.schema import FeatureSchema
@@ -204,6 +206,8 @@ class DeploymentController:
         self._state_lock = threading.RLock()
         self.not_ready_reason: str | None = "not started"
         self.persist_degraded: str | None = None
+        # Durable write that failed after memory already changed; retried by _reconcile.
+        self._pending_persist: Callable[[], None] | None = None
 
     # -- read side --------------------------------------------------------------------
 
@@ -255,6 +259,10 @@ class DeploymentController:
             "checks": checks,
             "reason": None if ready else (self.not_ready_reason or "check failed"),
             "model_version": a.version if a else None,
+            # Serving is correct (memory holds the right model) but state.json lags it.
+            # Promotions are refused until reconciled; a restart also self-heals.
+            "degraded": self.persist_degraded is not None,
+            "degraded_reason": self.persist_degraded,
         }
 
     def snapshot(self) -> dict[str, Any]:
@@ -272,12 +280,36 @@ class DeploymentController:
     # -- lifecycle --------------------------------------------------------------------
 
     def startup(self) -> None:
+        # A version is CANDIDATE only inside a running promote(); after a restart none
+        # is running, so a leftover candidate is from a crashed promotion. Release it
+        # so it can be retried (it was never active, so this is not a reactivation).
+        for v, e in self.registry.read_state()["versions"].items():
+            if e["state"] == State.CANDIDATE:
+                with contextlib.suppress(RegistryError):
+                    self.registry.transition(
+                        v,
+                        State.VALIDATED,
+                        action="candidate_released",
+                        reason="restart after interrupted promotion",
+                    )
         state = self.registry.read_state()
         active_v, good_v = state["active"], state["known_good"]
         if active_v is None:
             self.not_ready_reason = "no active model; run `mlpipe bootstrap <version>`"
             return
         good_lm, good_rep = (None, None) if good_v is None else self._load(good_v, "startup")
+        if state.get("probation") and active_v != good_v and good_lm is None:
+            # The candidate never proved itself and there is no fallback. Serving it
+            # without a gate (and as its own known-good) would hide that. Fail closed.
+            self.not_ready_reason = (
+                f"restart during probation of {active_v}: known-good {good_v} failed to "
+                f"load ({good_rep.summary()['failure_reason'] if good_rep else 'missing'}); "
+                "refusing to serve an unproven candidate without a fallback. Restore the "
+                "known-good artifact, then restart."
+            )
+            log(logger, logging.ERROR, "startup refused", reason=self.not_ready_reason)
+            self._publish_active()
+            return
         if state.get("probation") and good_lm is not None and active_v != good_v:
             # Restart during probation: the candidate never proved itself. Restore.
             self._known_good = good_lm
@@ -318,6 +350,24 @@ class DeploymentController:
         self.not_ready_reason = None
         self._publish_active()
         log(logger, logging.INFO, "startup", active=lm.version, known_good=self._known_good.version)
+
+    def _reconcile(self) -> None:
+        """Retry a durable write that failed after memory changed (caller holds locks)."""
+        if self._pending_persist is None:
+            return
+        try:
+            self._pending_persist()
+        except Exception as e:
+            self.persist_degraded = f"{self.persist_degraded} (retry failed: {e!r})"[:300]
+            raise DeploymentError(
+                "state_degraded",
+                f"durable state lags in-memory state; reconcile failed: {e!r}"[:300],
+                503,
+            ) from e
+        self._pending_persist = None
+        self.persist_degraded = None
+        self.metrics.deployment_events.labels("reconcile", "ok").inc()
+        self._publish_active()
 
     def validate(self, version: str, *, correlation_id: str | None = None) -> dict[str, Any]:
         cid = correlation_id or uuid.uuid4().hex
@@ -393,6 +443,8 @@ class DeploymentController:
             self._promote_lock.release()
 
     def _promote(self, version: str, expected_generation: int | None, cid: str) -> dict[str, Any]:
+        with self._state_lock:
+            self._reconcile()
         state = self.registry.read_state()
         if expected_generation is not None and expected_generation != state["generation"]:
             self.metrics.deployment_events.labels("promote", "stale").inc()
@@ -425,6 +477,13 @@ class DeploymentController:
             version, State.CANDIDATE, action="select_candidate", correlation_id=cid
         )
         lm, rep = self._load(version, "promote")
+        if lm is not None:
+            twin = self.registry.known_bad_shas(self.registry.read_state()).get(lm.sha256)
+            if twin is not None:
+                from mlpipe.validation import Check
+
+                rep.checks.append(Check("not_known_bad", False, f"identical bytes to {twin}"))
+                lm = None
         if lm is None:
             summary = rep.summary()
             self.registry.transition(
@@ -464,20 +523,31 @@ class DeploymentController:
                 validation=rep.summary(),
             )
         except Exception as e:
-            # Interrupted promotion: nothing in memory changed; put the version back.
-            self.metrics.deployment_events.labels("promote", "failed").inc()
+            landed = False
             with contextlib.suppress(Exception):
-                self.registry.transition(
-                    version,
-                    State.VALIDATED,
-                    action="promote_aborted",
-                    correlation_id=cid,
-                    failure_reason=repr(e)[:300],
+                after = self.registry.read_state()
+                landed = (
+                    after["active"] == version
+                    and (after.get("probation") or {}).get("version") == version
                 )
-            raise DeploymentError("promotion_failed", f"state commit failed: {e!r}", 500) from e
+            if landed:
+                # The commit reached state.json and the error came after it (e.g. dir
+                # fsync). Disk says the candidate is on probation: make memory agree.
+                log(
+                    logger,
+                    logging.WARNING,
+                    "promote commit landed despite error",
+                    version=version,
+                    error=repr(e)[:200],
+                )
+                out = {"state": after}
+            else:
+                self._abort_promotion(version, cid, e)
+        crashpoint("promote:after_commit_before_activate")
         with self._state_lock:
             self._gate = HealthGate(GateConfig.from_settings(self.settings))
             self._active = lm
+        crashpoint("promote:after_activate")
         self._publish_active()
         self.metrics.deployment_events.labels("promote", "ok").inc()
         log(
@@ -496,6 +566,19 @@ class DeploymentController:
             "known_good": self._known_good.version,
             "generation": out["state"]["generation"],
         }
+
+    def _abort_promotion(self, version: str, cid: str, e: Exception) -> NoReturn:
+        """Interrupted promotion: nothing in memory changed; put the version back."""
+        self.metrics.deployment_events.labels("promote", "failed").inc()
+        with contextlib.suppress(Exception):
+            self.registry.transition(
+                version,
+                State.VALIDATED,
+                action="promote_aborted",
+                correlation_id=cid,
+                failure_reason=repr(e)[:300],
+            )
+        raise DeploymentError("promotion_failed", f"state commit failed: {e!r}", 500) from e
 
     # -- health gate / rollback ---------------------------------------------------------
 
@@ -518,16 +601,23 @@ class DeploymentController:
                 self._finish_probation(lm, why, gate)
 
     def _finish_probation(self, lm: LoadedModel, why: str, gate: HealthGate) -> None:
-        try:
+        snap = gate.snapshot()
+
+        def persist() -> None:
             self.registry.apply_many(
                 [(lm.version, State.ACTIVE)],
                 action="probation_passed",
                 pointer_updates={"known_good": lm.version, "probation": None},
-                gate=gate.snapshot(),
+                gate=snap,
                 reason=why,
             )
+
+        try:
+            persist()
         except Exception as e:
+            # Safe direction: a restart would roll back a candidate that actually passed.
             self.persist_degraded = f"probation_passed not persisted: {e!r}"[:300]
+            self._pending_persist = persist
         self._known_good = lm
         self._gate = None
         self._publish_active()
@@ -555,6 +645,7 @@ class DeploymentController:
         # Memory first: stop serving the bad version even if persistence fails.
         self._active = good
         self._gate = None
+        crashpoint("rollback:after_swap")
         self._rollback_persist(
             bad.version,
             good,
@@ -594,7 +685,8 @@ class DeploymentController:
         **details: Any,
     ) -> None:
         verified = self._verify_recovery(good)
-        try:
+
+        def persist() -> None:
             self.registry.apply_many(
                 [(bad_version, State.ROLLED_BACK), (good.version, State.ACTIVE)],
                 action="rollback",
@@ -609,9 +701,16 @@ class DeploymentController:
                 recovery_result="verified" if verified else "smoke_failed",
                 **details,
             )
+
+        try:
+            persist()
             self.persist_degraded = None
+            self._pending_persist = None
         except Exception as e:
+            # Memory already serves known-good. state.json still says the bad version is
+            # active on probation, so a restart also restores known-good.
             self.persist_degraded = f"rollback not persisted: {e!r}"[:300]
+            self._pending_persist = persist
             log(logger, logging.ERROR, "rollback persist failed", error=repr(e)[:200])
         self.metrics.deployment_events.labels(
             "rollback", "ok" if verified else "smoke_failed"

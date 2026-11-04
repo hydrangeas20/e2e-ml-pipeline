@@ -19,6 +19,7 @@ import asyncio
 import hmac
 import logging
 import re
+import threading
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -139,6 +140,22 @@ class InvalidOutput(RuntimeError):
     pass
 
 
+class _Ticket:
+    """Per-request handshake between the worker thread and the waiting handler.
+
+    Exactly one of these happens, under ``lock``: the worker commits (audit written,
+    result will be returned) or the handler abandons (client got 504; the worker
+    must not audit or record the result). This keeps the audit log truthful.
+    """
+
+    __slots__ = ("abandoned", "committed", "lock")
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.abandoned = False
+        self.committed = False
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or Settings()
     configure_logging(settings.log_level)
@@ -155,6 +172,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        serve_lock = registry.acquire_serve_lock()  # raises if another server owns it
+        try:
+            async with _lifespan_body():
+                yield
+        finally:
+            serve_lock.close()
+
+    @asynccontextmanager
+    async def _lifespan_body() -> AsyncIterator[None]:
         controller.startup()
         lifecycle["started"] = True
         log(
@@ -233,7 +259,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     # -- inference ------------------------------------------------------------------
 
-    def infer(lm: LoadedModel, rows: list[dict[str, Any]], rid: str) -> list[Prediction]:
+    def infer(
+        lm: LoadedModel, rows: list[dict[str, Any]], rid: str, ticket: _Ticket
+    ) -> list[Prediction] | None:
         faults.before_predict(lm.version)
         X = transform(pd.DataFrame(rows), SERVING_SCHEMA, defect=faults.feature_defect(lm.version))
         proba = lm.estimator.predict_proba(X)
@@ -242,7 +270,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise InvalidOutput(bad)
         p1 = [float(p) for p in proba[:, 1]]
         preds = [Prediction(prediction=int(p >= lm.threshold), probability=p) for p in p1]
+        with ticket.lock:
+            if ticket.abandoned:
+                return None  # client already got 504: do not audit or count this result
+            _audit(lm, preds, rid)
+            ticket.committed = True
         controller.drift.observe(lm, X)
+        return preds
+
+    def _audit(lm: LoadedModel, preds: list[Prediction], rid: str) -> None:
         try:
             audit.write(
                 [
@@ -263,7 +299,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if settings.audit_required:
                 raise
             log(logger, logging.WARNING, "audit write failed (not required)")
-        return preds
 
     async def serve(rows: list[dict[str, Any]], route: str) -> tuple[LoadedModel, list[Prediction]]:
         if lifecycle["draining"]:
@@ -286,7 +321,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         loop = asyncio.get_running_loop()
         rid = request_id_var.get() or uuid.uuid4().hex
         t0 = time.perf_counter()
-        fut = loop.run_in_executor(executor, infer, lm, rows, rid)
+        ticket = _Ticket()
+        fut = loop.run_in_executor(executor, infer, lm, rows, rid, ticket)
 
         def release(_: object) -> None:
             lifecycle["admitted"] -= 1
@@ -294,10 +330,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         fut.add_done_callback(release)
         try:
-            preds = await asyncio.wait_for(asyncio.shield(fut), settings.request_timeout_s)
+            try:
+                result = await asyncio.wait_for(asyncio.shield(fut), settings.request_timeout_s)
+            except TimeoutError:
+                with ticket.lock:
+                    late_commit = ticket.committed
+                    ticket.abandoned = not late_commit
+                if not late_commit:
+                    raise
+                result = await fut  # audit already written: the result must be returned
         except TimeoutError:
-            fut.add_done_callback(lambda f: f.exception() if not f.cancelled() else None)
-            fail(lm, "timeout", t0)
+
+            def on_abandoned_done(f: asyncio.Future[Any]) -> None:
+                if f.cancelled():
+                    metrics.abandoned.labels("cancelled").inc()
+                elif f.exception() is not None:
+                    metrics.abandoned.labels("failed").inc()
+                else:
+                    metrics.abandoned.labels("completed").inc()
+
+            fut.add_done_callback(on_abandoned_done)
+            await fail(lm, "timeout", t0)
             raise ServiceError(
                 504,
                 "timeout",
@@ -318,23 +371,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 InvalidOutput: "invalid_output",
                 FeatureValidationError: "feature_pipeline",
             }[type(e)]
-            fail(lm, reason, t0)
+            await fail(lm, reason, t0)
             raise ServiceError(500, "prediction_failed", reason, model_version=lm.version) from None
         except Exception as e:
-            fail(lm, "internal", t0)
+            await fail(lm, "internal", t0)
             log(logger, logging.ERROR, "inference error", error_type=type(e).__name__)
             raise ServiceError(
                 500, "prediction_failed", "internal", model_version=lm.version
             ) from None
+        assert result is not None  # only None when abandoned, which raised above
+        preds = result
         latency = (time.perf_counter() - t0) * 1000
         metrics.latency.labels(route).observe(latency / 1000)
         metrics.predictions.labels(lm.version).inc(len(preds))
-        controller.record_outcome(lm, True, latency)
+        # Gate bookkeeping may roll back (fsync'd I/O): keep it off the event loop.
+        await asyncio.to_thread(controller.record_outcome, lm, True, latency)
         return lm, preds
 
-    def fail(lm: LoadedModel, reason: str, t0: float) -> None:
+    async def fail(lm: LoadedModel, reason: str, t0: float) -> None:
         metrics.errors.labels(lm.version, reason).inc()
-        controller.record_outcome(lm, False, (time.perf_counter() - t0) * 1000)
+        latency = (time.perf_counter() - t0) * 1000
+        await asyncio.to_thread(controller.record_outcome, lm, False, latency)
 
     @app.post("/v1/predict", response_model=PredictResponse)
     async def predict_v1(body: PredictRequest) -> PredictResponse:
@@ -376,7 +433,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/readyz")
     async def readyz() -> JSONResponse:
-        r = controller.readiness()
+        r = await asyncio.to_thread(controller.readiness)  # re-hashes the artifact
         if lifecycle["draining"]:
             r = {**r, "ready": False, "reason": "draining"}
         return JSONResponse(r, status_code=200 if r["ready"] else 503)

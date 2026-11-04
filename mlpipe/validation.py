@@ -111,6 +111,15 @@ def validate_artifact(
         problems.append(f"manifest version {manifest.model_version} != dir {artifact_dir.name}")
     if manifest.classes != [0, 1]:
         problems.append(f"classes {manifest.classes} != [0, 1]")
+    try:
+        declared = FeatureSchema.from_dict(manifest.feature_schema)
+        if declared.fingerprint != manifest.feature_schema_fingerprint:
+            problems.append(
+                f"feature_schema ({declared.version}) does not match its fingerprint "
+                f"{manifest.feature_schema_fingerprint[:12]}"
+            )
+    except (KeyError, TypeError, AssertionError) as e:
+        problems.append(f"feature_schema unparseable: {e!r}")
     if not add("metadata", not problems, "; ".join(problems)):
         return rep
 

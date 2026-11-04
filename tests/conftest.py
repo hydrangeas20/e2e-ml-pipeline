@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import shutil
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -93,7 +94,8 @@ def client_factory(
 
     yield make
     for c in clients:
-        c.__exit__(None, None, None)
+        with contextlib.suppress(Exception):  # tests may have shut a client down already
+            c.__exit__(None, None, None)
 
 
 @pytest.fixture
