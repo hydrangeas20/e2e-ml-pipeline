@@ -242,3 +242,47 @@ All settings come from `MLPIPE_*` environment variables (`mlpipe/config.py`) and
 - The event journal is fsync'd; the audit log is fsync'd only with `MLPIPE_AUDIT_FSYNC=true`.
 - Proxy drift monitoring is a mean-shift heuristic over the last 500 rows. It is not a statistical test and does not trigger rollback.
 - **Docker:** this build environment cannot reach any container registry, so the image was validated on a locally assembled Ubuntu 24.04 / Python 3.12.3 base (`--build-arg BASE_IMAGE=…`) instead of `python:3.12-slim`. See the PR for details. CI builds with the default base.
+
+## 10. Docker operations
+
+Verified against a running container (see the PR for the run). The image runs as uid 10001, keeps all state under `/var/lib/mlpipe`, and ships with `v1-legacy-rf` bootstrapped as active and known-good.
+
+```bash
+docker build -t mlpipe .
+docker run -d --name mlpipe -p 8000:8000 \
+  -v mlpipe-data:/var/lib/mlpipe \
+  -e MLPIPE_ADMIN_TOKEN="$(openssl rand -hex 16)" \
+  mlpipe
+curl -s localhost:8000/readyz
+```
+
+**Storage.**
+- Use a **named volume**. On first use Docker copies the image's seeded registry into it, and the state then survives `docker restart` and container replacement.
+- A **bind mount of an empty directory** hides the seed: the service starts unready (`no active model; run mlpipe bootstrap <version>`). The directory must be writable by uid 10001.
+- The legacy pickle is not in the runtime image. To start from an empty directory, copy a registry in, or register an artifact and run `mlpipe bootstrap <version>`, then restart.
+
+**Train, promote, inspect.** The CLI is on the image's `PATH`, and `MLPIPE_REGISTRY_DIR` and the admin token are already in the container environment:
+
+```bash
+docker cp train.csv mlpipe:/tmp/train.csv
+docker exec mlpipe mlpipe train --data /tmp/train.csv --version v2-rf   # register (offline, locked)
+docker exec mlpipe mlpipe promote v2-rf                                 # via the running server
+docker exec mlpipe mlpipe predict -n 1
+docker exec mlpipe mlpipe state
+docker exec mlpipe mlpipe events --limit 5
+docker exec mlpipe mlpipe rollback --reason "operator"
+```
+
+**Restart behaviour.**
+- `docker restart` during probation restores the known-good model (event `rollback`, trigger `restart_during_probation`). This was observed in the container.
+- `docker stop` sends SIGTERM; the service drains in-flight requests (`--timeout-graceful-shutdown 15`). Give `docker stop -t` at least that long.
+
+**Do not:**
+- start a second server against the same volume. It fails with `serving lock … held by pid 1`, also observed in the container;
+- add `--workers`;
+- enable `MLPIPE_ENABLE_FAULT_INJECTION` outside testing.
+
+**Secrets.** `MLPIPE_ADMIN_TOKEN` is read from the environment, so it is visible to anyone who can run `docker inspect` on the container. On a shared host, restrict access to the Docker daemon. Terminate TLS in front of the service; it serves plain HTTP.
+
+**Base image.** `python:3.12-slim` is referenced by tag, not by digest; Python dependencies are hash-pinned. Pin the digest for fully repeatable images. CI builds the image and runs `scripts/docker_smoke.sh` on every push.
+
