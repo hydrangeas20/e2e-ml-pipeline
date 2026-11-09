@@ -92,7 +92,7 @@ The demo uses a tighter gate than the defaults (10 samples, 20% error rate) so i
 
 | What | Result |
 |---|---|
-| `make check` (ruff, `mypy --strict`, pytest) | **148 passed, 0 skipped**, on Python 3.12 locally (two consecutive runs) and in CI on 3.12 and 3.13 |
+| `make check` (ruff, `mypy --strict`, pytest) | **149 passed, 0 skipped**, on Python 3.12 locally and in CI on 3.12 and 3.13 |
 | `make demo` (real uvicorn process) | **27/27** assertions |
 | `make docker-smoke` | container healthy, runs as uid 10001, rejects bad input with 422, drains on stop |
 | Reliability review | 12 defects found and fixed (R1–R12). Each has a regression test that fails on the pre-review commit and passes now ([`docs/REVIEW.md`](docs/REVIEW.md)) |
@@ -113,6 +113,7 @@ The demo uses a tighter gate than the defaults (10 samples, 20% error rate) so i
 | Review regressions R1–R12 | 12 | `tests/test_review_regressions.py` |
 | Fault injection, configuration, shutdown, diagnosis | 23 | `tests/test_faults_diagnose.py` |
 | CLI lifecycle and the full demo | 2 | `tests/test_cli_e2e.py` |
+| Declared Python support matches the CI matrix | 1 | `tests/test_packaging.py` |
 
 What this evidence does **not** cover: multi-host deployment, power loss, adversarial artifact authors (there is no signing), and the predictive quality of any new model.
 
@@ -160,7 +161,7 @@ A modular monolith: one package, one serving process, a filesystem registry.
 app/main.py                 entry point (uvicorn app.main:app)
 mlpipe/                     platform package (see table above)
 mlpipe/data/smoke.csv       rows used for validation smoke inference
-tests/                      148 tests, incl. crash harness
+tests/                      149 tests, incl. crash harness
 docs/PLATFORM.md            architecture, guarantees, runbook
 docs/REVIEW.md              reliability review: findings, crash matrix, API decisions
 scripts/docker_smoke.sh     container smoke test
@@ -283,12 +284,12 @@ Runbook entries for latency spikes, error spikes, load failures, degraded state,
 
 ## Quick start
 
-Requires Python 3.12 or 3.13 (both tested in CI).
+Requires Python 3.12 or newer (`requires-python >=3.12`); CI tests 3.12 and 3.13.
 
 ```bash
 python3.12 -m venv .venv && . .venv/bin/activate
 make install                 # requirements/dev.lock (hash-pinned) + editable install
-make check                   # ruff, mypy --strict, 148 tests (~2.5 min)
+make check                   # ruff, mypy --strict, 149 tests (~2.5 min)
 make demo                    # rollout -> injected failure -> automatic rollback
 ```
 
@@ -351,7 +352,6 @@ Credentials for the MLflow/DagsHub remote go in a local `.env` (ignored by git).
 | **Crash just after the rollback swap** records the committed reason as `restart_during_probation`, not `health_gate`. | Future work |
 | **Original training is not reproducible.** The raw data lives only on the DagsHub DVC remote, and the committed `src/train.py` is not the version pinned in `dvc.lock`. Serving, artifacts and legacy evaluation *are* reproducible. | Cannot be fixed without the historical inputs |
 | **Not a validated clinical model.** Models trained by the demo or tests are deployment-testing fixtures. | By design |
-| **Python 3.12 / 3.13 only tested.** `pyproject.toml` declares `>=3.11`; 3.11 is untested. | Known |
 
 Full detail, with source locations: [`docs/REVIEW.md`](docs/REVIEW.md).
 
