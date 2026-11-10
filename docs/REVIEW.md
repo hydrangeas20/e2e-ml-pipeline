@@ -158,9 +158,59 @@ Float features (`BMI`, `DiabetesPedigreeFunction`) follow the same rules on both
 |---|---|---|
 | `make check` (ruff, `mypy --strict`, pytest, Python 3.12) | 81 passed | **126 passed** |
 | After the owner's API decisions (`tests/test_api_compat.py`, +22) | — | **148 passed** |
+| After the release audit (`tests/test_packaging.py`, +1) | — | **149 passed** |
 | Review regressions R1–R12 | **12 failed** | 12 passed |
 | Gate/concurrency characterization (21) | 21 passed | 21 passed |
 | Crash-recovery matrix (12, subprocess) | not runnable (no crash points existed) | 12 passed |
 | `make demo` (real uvicorn) | passed (27 assertions) | passed (27 assertions) |
 | Docker smoke (local, stand-in base) | **exit 141** (T1) | passed: healthy, uid 10001, 422 on bad input, graceful stop |
 | CI on the PR | green at `a0c9a9c` | see the PR for the run on the review head |
+
+## 9. Guarantee map (release audit, 2026-11-08)
+
+Each guarantee, the code that enforces it (line numbers at `faf0e2b`), and the tests that would fail if it broke.
+
+| Guarantee | Enforced in | Tests |
+|---|---|---|
+| Only reviewed types are deserialized; pickle never loaded on the serving path | `artifacts.py:50` (`TRUSTED_EXTRA_TYPES`), `:204` (`load_estimator`) | `test_untrusted_types_are_refused_not_loaded`, `test_legacy_pickle_refused_unless_pinned` |
+| Bytes match the manifest before load, and again on the exact bytes loaded | `artifacts.py:183`, `:204` | `test_tamper_detected_after_packaging`, `test_corrupted_artifact_is_never_deserialized` |
+| Manifest schema and its fingerprint agree | `validation.py:118` | `test_r6_…` |
+| Exactly one version is `active`, and it is the pointer | `registry.py:190` (`check_invariants`), `:380` (no same-state transitions) | `test_r12_…`, `test_concurrent_promotion_requests` |
+| Only listed transitions; terminal states stay terminal | `registry.py` `TRANSITIONS` | `test_state_machine_rejects_invalid_transitions`, `test_rejected_or_rolled_back_versions_cannot_be_reactivated` |
+| Stale writers refused | `registry.py:309`, `deployment.py` `_promote` | `test_stale_generation_refused`, `test_concurrent_promotions_with_the_same_stale_counter` |
+| Generations unique; aborted writes visible | `registry.py:173` (`_next_state`) | `test_r3_…`, `test_crash_before_promote_commit` |
+| `state.json` replaced atomically | `artifacts.py:109` (`write_json_atomic`) | `test_interrupted_commit_leaves_state_unchanged_and_reports_uncommitted` |
+| Failed durable writes reconciled before the next promotion | `deployment.py:354` (`_reconcile`) | `test_r2_…` |
+| Known-bad bytes cannot return under a new name | `registry.py:229` (`known_bad_shas`), `deployment.py` promote check | `test_r7_…` |
+| Interrupted promotion recoverable | `deployment.py:292` (release candidates), `:526` (commit landed) | `test_r10_…`, `test_r11_…`, `test_crash_before_promote_commit` |
+| Restart during probation restores known-good | `deployment.py` `startup` | `test_crash_after_promote_commit_restores_known_good` (3 crash points), `test_restart_during_probation_restores_known_good` |
+| Fail closed when known-good unavailable during probation | `deployment.py:305` | `test_r1_…`, `test_missing_known_good_on_restart_during_probation_fails_closed` |
+| Rollback restores the in-memory known-good; idempotent | `deployment.py:634` (`_rollback_locked`) | `test_full_rollout_failure_and_automatic_rollback`, `test_manual_rollback_and_idempotency`, `test_simultaneous_manual_and_automatic_rollback` (×5) |
+| Late outcomes never affect another model's gate | `deployment.py:590` (identity check) | `test_late_result_from_rolled_back_candidate_cannot_touch_next_gate` (×2), `test_late_outcomes_from_replaced_model_are_ignored` |
+| Responses and audit records name the model that ran | `app.py` (single reference read per request) | `test_concurrent_inference_during_promotion_is_consistently_attributed`, `test_concurrent_predictions_during_rollback`, `test_request_spanning_a_swap_…` |
+| One serving process per registry | `registry.py:108`, `app.py` lifespan | `test_r5_…`; observed in a container (§10) |
+| Paths stay inside the registry | `registry.py:221` | `test_r9_…`, `test_symlinked_model_refused` |
+| Bounded admission → 429 | `app.py:334` | `test_overload_is_refused_at_admission` |
+| 504 work is not audited or counted | `app.py:294` (ticket) | `test_r4_…`, `test_timeout_returns_504_and_keeps_slot_until_work_finishes` |
+| `/v1/predict` strict; `/predict` exact-integer floats only; deprecated in OpenAPI | `app.py:75` (`LegacyFeatures`) | `tests/test_api_compat.py` (22) |
+| Admin auth (constant-time), disabled without token | `app.py:479` | `test_admin_requires_token`, `test_faults_disabled_by_default` |
+| No feature values in logs, errors or audit | `observability.py:19`, error handler | `test_logs_are_json_and_omit_features`, `test_strict_input_validation`, `test_v1_predict_contract_and_traceability` |
+| Declared Python support = CI matrix | `pyproject.toml` | `test_declared_python_floor_is_the_oldest_ci_tested_version` |
+
+SHA-256 provides **integrity** only. It does not authenticate who produced an artifact.
+
+## 10. Release classification (2026-11-08)
+
+| Item | Class | Reason |
+|---|---|---|
+| Python 3.11 declared but untested | **P1, fixed** (`faf0e2b`) | Metadata claimed more than was verified. Narrowed to `>=3.12` (the smallest accurate fix) and guarded by a test. Adding 3.11 to CI would need new locks and a new support commitment. |
+| No maximum probation duration | P2 | Fails safe: no traffic means no promotion, and a restart rolls back. Operational inconvenience, not unsafe. |
+| Coarse small-sample gate | P2 | Conservative in the safe direction; documented thresholds. |
+| Crash-recovery audit-reason gap (`rollback:after_swap`) | P2 | The recovered state is correct; only the committed trigger label differs. Per-request errors remain in metrics and logs. |
+| One serving process per registry | Accepted architecture | Enforced, not assumed. |
+| Timed-out threads keep running | Accepted architecture | Bounded by admission; not audited or counted. Cancellation needs process-isolated workers. |
+| No artifact signing | P2 | Integrity only; registry write access is the trust boundary. |
+| Original training not reproducible | Accepted | Needs historical data and code that are not available. |
+| Base image pinned by tag | P2 | Python dependencies are hash-pinned; digest pinning is a one-line change for releases. |
+| Admin token visible via `docker inspect` | P2 | Requires Docker-daemon access, which already implies root-equivalent access to the host. |
+
