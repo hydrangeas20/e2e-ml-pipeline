@@ -1,21 +1,11 @@
-from fastapi import FastAPI
-import pickle
-import pandas as pd
+"""Entry point kept at its original path so `uvicorn app.main:app` keeps working.
 
-app = FastAPI(title="Diabetes Prediction API")
+The implementation lives in ``mlpipe.serving.app``. The original endpoints are
+preserved: ``GET /`` returns ``{"status": "ok"}`` and ``POST /predict`` accepts the
+same flat feature payload and still returns ``prediction`` and ``confidence``
+(now with strict validation and model-version metadata added).
+"""
 
-MODEL_PATH = "models/model.pkl"
+from mlpipe.serving.app import create_app
 
-with open(MODEL_PATH, "rb") as f:
-    model = pickle.load(f)
-
-@app.get("/")
-def health():
-    return {"status": "ok"}
-
-@app.post("/predict")
-def predict(payload: dict):
-    df = pd.DataFrame([payload])
-    pred = model.predict(df)[0]
-    prob = model.predict_proba(df)[0].max()
-    return {"prediction": int(pred), "confidence": float(prob)}
+app = create_app()

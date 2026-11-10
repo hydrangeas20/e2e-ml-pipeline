@@ -1,0 +1,47 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install (hash-pinned)
+        run: |
+          python -m pip install --require-hashes -r requirements/dev.lock
+          python -m pip install --no-deps -e .
+      - name: Lint
+        run: make lint
+      - name: Type check
+        run: make typecheck
+      - name: Tests (incl. real-server rollout demo)
+        run: python -m pytest -q
+      - name: Reproducible demo
+        run: mlpipe demo --workdir demo_run
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: demo-run-${{ matrix.python }}
+          path: demo_run/
+          retention-days: 7
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and smoke-test image
+        run: bash scripts/docker_smoke.sh
